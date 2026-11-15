@@ -15,6 +15,7 @@ dist/
 *.csv
 
 .env
+.venv/
 .vim
 .nvimrc
 .vscode
@@ -52,3 +53,6 @@ node_modules/
 ./pretrain
 .idea/
 .aider*
+
+# local experiment run logs
+examples/param_exps/*.log
