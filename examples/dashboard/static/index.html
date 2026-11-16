@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>实验记录 · qlib</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div class="shell">
+
+  <aside class="rail">
+    <div class="rail-head">
+      <h2 class="rail-title">实验记录</h2>
+      <div class="rail-meta" id="railMeta"></div>
+      <input class="search" id="search" type="search" placeholder="筛选配置名或 run id" aria-label="筛选 run">
+    </div>
+    <div class="rail-body" id="railBody"></div>
+  </aside>
+
+  <main class="main">
+    <div class="main-inner">
+      <p class="load-state" id="loadState">正在读取 mlruns…</p>
+
+      <header class="verdict" id="verdictBlock" hidden>
+        <h1 id="verdict"></h1>
+        <p class="sub" id="verdictSub"></p>
+        <div class="verdict-src">
+          <span id="srcName"></span>
+          <span class="sep">/</span>
+          <span id="srcRun"></span>
+        </div>
+      </header>
+
+      <dl class="stats" id="stats"></dl>
+
+      <section class="plot" id="plotBlock" hidden>
+        <div class="tabs" role="tablist" id="tabs"></div>
+        <div class="strip" id="strip" hidden></div>
+        <div class="frame" id="frame"></div>
+      </section>
+
+      <section class="reading" id="readingBlock" hidden>
+        <h2 class="reading-head">解读</h2>
+        <div class="notes" id="notes"></div>
+        <div class="foot">悬停指标看定义 · 图表由 qlib 官方 report 接口生成 · 数据来自 examples/mlruns</div>
+      </section>
+    </div>
+  </main>
+
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

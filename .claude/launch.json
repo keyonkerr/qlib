@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard-preview",
+      "runtimeExecutable": "/Users/k/workspace/qlib/.venv/bin/python",
+      "runtimeArgs": ["-m", "http.server", "8765", "--directory", "/Users/k/workspace/qlib/examples"],
+      "port": 8765
+    }
+  ]
+}
