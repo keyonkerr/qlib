@@ -1,0 +1,129 @@
+# ============================================================================
+# path_exps | 00_baseline —— 五条路径实验的基线（路径 0，不改任何东西）
+# ============================================================================
+# LightGBM + Alpha158 + csi300，与 examples/my_first_run.yaml 等价。
+# 唯一偏差：新增 seed: 42（本目录所有配置共用，便于重复实验评估噪声）。
+#
+# 运行（务必带 PYTHONUTF8=1：qlib 用 open() 默认编码读 YAML，中文 Windows 的
+# GBK 会读不了本文件的中文注释；本目录其余配置是纯 ASCII，不需要）：
+#   cd examples
+#   PYTHONUTF8=1 MLFLOW_ALLOW_FILE_STORE=true python -m qlib.cli.run path_exps/00_baseline.yaml
+#
+# 本文件是一整套实验定义，按执行顺序分 8 块：
+#   experiment_name   → 结果写到哪个实验目录
+#   qlib_init         → 数据在哪、并行开几进程
+#   market/benchmark  → 股票池与对照基准（YAML 锚点，多处复用）
+#   data_handler_...  → 取数区间 + 标准化参数的拟合区间
+#   port_analysis_... → 回测：怎么选股、怎么撮合、成本多少
+#   task.model        → 用什么模型、什么超参
+#   task.dataset      → 特征怎么算、训练/验证/测试怎么切
+#   task.record       → 跑完记录什么产物（预测、IC、回测报告）
+#
+# 标记约定：本目录 8 个变体配置里，与基线不同、真正改动的行尾都带
+#     # <<< CHANGED vs baseline
+# 没有这个标记的行都是与基线完全一致的公共配置（数据区间、回测成本、超参等），
+# 看实验时直接跳到带标记的行即可。
+# ============================================================================
+
+# MLflow 实验名：结果写入 examples/mlruns/path_exps/<run_id>/。
+# 与旧实验（workflow、param_exps）隔离，path_exps/compare.py 只读这个目录。
+experiment_name: path_exps
+
+qlib_init:
+    # 二进制行情数据目录（.bin 文件，本机约 845MB，6175 只标的）
+    provider_uri: "~/.qlib/qlib_data/cn_data"
+    # 中国市场规则：最小交易单位 100 股、涨跌停默认 9.5%、年化按 238 天等
+    region: cn
+    # 因子计算的并行进程数。官方默认 CPU-2，本机 24 核会开 22 个 worker 吃内存，压到 1
+    kernels: 1
+
+# 股票池与基准。&market 是定义，*market 是引用；下方 handler 与 benchmark 各引用一次。
+# 改 market: csi500 并同步换基准，就能全局换池子（见 21_csi500.yaml）。
+market: &market csi300
+benchmark: &benchmark SH000300
+
+# 取数区间与标准化参数的拟合区间。
+# fit_* 与 start/end 分开是关键：Alpha158 默认对标签做截面 z-score（CSZScoreNorm），
+# 若用全区间（含测试期）统计量去标准化就是用未来信息；fit 锁在训练期内可杜绝前视偏差。
+# 注意 Alpha158 的默认行为：infer_processors=[]（推理时不加工特征），
+# 只有 learn_processors 对标签做 DropnaLabel + CSZScoreNorm，所以这里看不到特征标准化配置。
+data_handler_config: &data_handler_config
+    start_time: 2008-01-01      # Handler 实际加载的数据范围
+    end_time: 2020-08-01
+    fit_start_time: 2008-01-01  # 只在这段上拟合标准化参数
+    fit_end_time: 2014-12-31
+    instruments: *market        # 股票池：csi300 成分股
+
+# 回测配置：策略怎么把预测变成持仓，交易怎么撮合。
+port_analysis_config: &port_analysis_config
+    strategy:
+        class: TopkDropoutStrategy
+        module_path: qlib.contrib.strategy
+        kwargs:
+            # <PRED> 是占位符，回测阶段被 SignalRecord 存下的 pred.pkl 替换
+            signal: <PRED>
+            topk: 50                # 持有 50 只
+            n_drop: 5               # 每天最多换 5 只（买入、卖出各受此上限约束）
+    backtest:
+        start_time: 2017-01-01      # 回测区间，与 dataset 的 test 段对齐
+        end_time: 2020-08-01
+        account: 100000000          # 初始资金 1 亿，决定单笔金额和 min_cost 的相对影响
+        benchmark: *benchmark       # 基准指数：超额 = 策略收益 - 基准收益
+        exchange_kwargs:
+            limit_threshold: 0.095  # 涨跌停判定：变动超 9.5% 视为封板，当天买不进/卖不出
+            deal_price: close       # 成交价：T 日收盘出信号，T+1 日收盘价成交
+            open_cost: 0.0005       # 买入成本 5bp（佣金）
+            close_cost: 0.0015      # 卖出成本 15bp（约 10bp 印花税 + 5bp 佣金）
+            min_cost: 5             # 每笔最低佣金 5 元
+
+task:
+    # 模型与超参。这组数值是官方 LightGBM 基准的原样数值（已调过参），本方案不动它们：
+    # 路径③只换 class/module_path，超参保持一致，模型对比才公平。
+    model:
+        class: LGBModel
+        module_path: qlib.contrib.model.gbdt
+        kwargs:
+            loss: mse               # 回归（预测收益率），不是分类
+            colsample_bytree: 0.8879  # 每棵树随机用 89% 的特征
+            learning_rate: 0.2
+            subsample: 0.8789       # 每棵树随机用 88% 的样本
+            lambda_l1: 205.6999     # L1 正则，很强
+            lambda_l2: 580.9768     # L2 正则，很强
+            max_depth: 8
+            num_leaves: 210
+            num_threads: 2          # 压到 2 线程，配合 kernels: 1
+            seed: 42                # 本方案新增：保证可复现，并支持 --repeat 换种子评估噪声
+    # DatasetH 是表格型数据集（对应树模型/线性模型）。
+    # 三层时间切分是防泄漏核心：训练拟合、验证早停、测试只出信号不参与训练。
+    dataset:
+        class: DatasetH
+        module_path: qlib.data.dataset
+        kwargs:
+            handler:
+                class: Alpha158     # 158 个因子 + 默认标签
+                module_path: qlib.contrib.data.handler
+                kwargs: *data_handler_config
+            segments:
+                train: [2008-01-01, 2014-12-31]   # 训练 7 年
+                valid: [2015-01-01, 2016-12-31]   # 验证 2 年（早停用）
+                test: [2017-01-01, 2020-08-01]    # 测试 3.5 年（只出预测）
+    # 记录器，顺序不能换：后一段依赖前一段的产物。
+    record:
+        # 1) 产出 pred.pkl（约 26 万条预测）和 label.pkl
+        - class: SignalRecord
+          module_path: qlib.workflow.record_temp
+          kwargs:
+            model: <MODEL>
+            dataset: <DATASET>
+        # 2) 读 pred.pkl，产出 ic.pkl / ric.pkl 及 IC、ICIR、Rank IC 指标。
+        #    ana_long_short: False 表示不算多空指标，故 ann_scaler 实际闲置（它只影响多空年化）
+        - class: SigAnaRecord
+          module_path: qlib.workflow.record_temp
+          kwargs:
+            ana_long_short: False
+            ann_scaler: 252
+        # 3) 读 pred.pkl，替换 <PRED> 并启动回测，产出回测报告与超额收益分析
+        - class: PortAnaRecord
+          module_path: qlib.workflow.record_temp
+          kwargs:
+            config: *port_analysis_config

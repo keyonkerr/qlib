@@ -56,3 +56,4 @@ node_modules/
 
 # local experiment run logs
 examples/param_exps/*.log
+examples/path_exps/logs/
