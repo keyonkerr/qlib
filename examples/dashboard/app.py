@@ -45,12 +45,48 @@ def api_runs() -> list[dict]:
                 "experiment": run["experiment"],
                 "experiment_id": run["experiment_id"],
                 "name": run["name"],
+                "config": run["config"],
                 "start_time": run["start_time"],
                 "status": run["status"],
                 "has_renders": run["has_renders"],
                 "summary": s,
             }
         )
+    return out
+
+
+@app.get("/api/configs")
+def api_configs() -> list[dict]:
+    """Runs grouped by the YAML they came from, with run-to-run spread."""
+    runs = store.list_runs()
+    out = []
+    for g in store.list_configs():
+        base = metrics.baseline_for(runs, g["experiment"])
+        items = []
+        for run in g["runs"]:
+            s = metrics.summary(run, base)
+            items.append(
+                {
+                    "run_id": run["run_id"],
+                    "name": run["name"],
+                    "seed": run["config"]["seed"],
+                    "start_time": run["start_time"],
+                    "status": run["status"],
+                    "has_renders": run["has_renders"],
+                    "summary": s,
+                }
+            )
+        out.append({
+            "key": g["key"],
+            "label": g["label"],
+            "experiment": g["experiment"],
+            "run_count": g["run_count"],
+            "seeds": g["seeds"],
+            "newest_run_id": g["newest_run_id"],
+            "has_renders": g["has_renders"],
+            "aggregate": g["aggregate"],
+            "runs": items,
+        })
     return out
 
 

@@ -2,10 +2,24 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "dashboard-preview",
+      "name": "dashboard-win",
+      "runtimeExecutable": "C:/Users/keyonke/.pyenv/pyenv-win/versions/3.12.0/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app:app", "--port", "8766"],
+      "cwd": "${workspaceFolder}/examples/dashboard",
+      "port": 8766,
+      "env": {
+        "MLFLOW_ALLOW_FILE_STORE": "true"
+      }
+    },
+    {
+      "name": "dashboard-mac",
       "runtimeExecutable": "/Users/k/workspace/qlib/.venv/bin/python",
-      "runtimeArgs": ["-m", "http.server", "8765", "--directory", "/Users/k/workspace/qlib/examples"],
-      "port": 8765
+      "runtimeArgs": ["-m", "uvicorn", "app:app", "--port", "8766"],
+      "cwd": "${workspaceFolder}/examples/dashboard",
+      "port": 8766,
+      "env": {
+        "MLFLOW_ALLOW_FILE_STORE": "true"
+      }
     }
   ]
 }

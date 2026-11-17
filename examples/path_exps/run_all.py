@@ -87,6 +87,19 @@ def run_one(yaml_path: Path, seed=None):
     ok = proc.returncode == 0
     print(f"=== [{time.strftime('%H:%M:%S')}] {'done' if ok else 'FAILED'} {name} "
           f"({elapsed:.1f} min){'' if ok else f' -- see {log}'}", flush=True)
+
+    # Freeze the YAML into the run's artifacts while the file still exists:
+    # with --repeat this is a temporary seed-modified copy that is deleted below.
+    if ok:
+        try:
+            subprocess.run(
+                [sys.executable, str(EXAMPLES / "tools" / "snapshot_config.py")],
+                cwd=EXAMPLES, env=ENV, check=False,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            pass
+
     if tmp is not None:
         tmp.unlink(missing_ok=True)
     return ok, elapsed

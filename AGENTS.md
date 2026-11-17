@@ -30,6 +30,8 @@ examples/
 │   └── compare.py             横向对比表
 ├── report_graphs.py           调 qlib 官方 report 接口生成 Plotly 图表，写入 run 的 artifacts/renders/
 ├── dashboard/                 实验看板（FastAPI + 原生 JS，无构建步骤）
+├── tools/
+│   └── snapshot_config.py     把配置 YAML 冻结进 run 的 artifacts（历史可复现）
 └── mlruns/                    MLflow 实验记录（已 gitignore）
 
 docs_readable/                 中文学习笔记，按「跑通 → 理解 → 实验」组织
@@ -65,6 +67,12 @@ python report_graphs.py --run-id <run_id>
 
 ```bash
 cd dashboard && ../../.venv/bin/uvicorn app:app --reload --port 8766
+```
+
+为存量 run 补配置快照（批量运行已自动执行，只有旧 run 需要手动补）：
+
+```bash
+MLFLOW_ALLOW_FILE_STORE=true python tools/snapshot_config.py --all
 ```
 
 ## 环境注意事项

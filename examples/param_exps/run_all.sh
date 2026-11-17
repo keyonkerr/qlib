@@ -53,6 +53,8 @@ for f in "${files[@]}"; do
     printf '=== [%s] 开始 %s\n' "$(date +%H:%M:%S)" "$name"
     if $PY -m qlib.cli.run "$f" > "$log" 2>&1; then
         echo "=== [$(date +%H:%M:%S)] 完成 $name"
+        # 把 YAML 冻结进 run 的产物，之后改配置也不会改写历史 run 的显示
+        $PY tools/snapshot_config.py > /dev/null 2>&1 || true
         ok=$((ok + 1))
     else
         echo "=== [$(date +%H:%M:%S)] 失败 $name（详见 $log）"
