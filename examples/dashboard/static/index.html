@@ -38,8 +38,21 @@
     <p class="loading" id="loading">正在读取 mlruns…</p>
     <article class="specimen" id="specimen" hidden></article>
     <article class="comparison" id="comparison" hidden></article>
+    <article class="config-sheet" id="config" hidden></article>
   </main>
 
+</div>
+
+<div class="run-drawer" id="rundrawer" hidden>
+  <header class="drawer-head">
+    <span class="drawer-dot" id="drawerdot" aria-hidden="true"></span>
+    <span class="drawer-title" id="drawertitle">运行日志</span>
+    <span class="drawer-meta" id="drawermeta"></span>
+    <button class="drawer-btn" id="drawercancel" type="button" hidden>取消</button>
+    <button class="drawer-x" id="drawerclose" type="button" aria-label="收起日志">×</button>
+  </header>
+  <pre class="drawer-log" id="drawerlog" tabindex="0"></pre>
+  <footer class="drawer-foot" id="drawerfoot" hidden></footer>
 </div>
 
 <script src="/app.js"></script>

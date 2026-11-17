@@ -13,19 +13,30 @@ dashboard/
 ├── metrics.py          口径换算：年化、delta、成本损耗
 ├── analysis.py         规则引擎：指标 → 中文解读
 ├── compare.py          对照：多 run 对齐、差异与最优判定（纯函数）
+├── runner.py           磁盘扫描 + 串行训练队列 + SSE 日志（唯一起子进程的模块）
 └── static/             前端，见 static/AGENTS.md
     ├── index.html
     ├── app.js
     └── style.css
 ```
 
-依赖方向是单向的：`app.py` → `store.py` / `metrics.py` / `analysis.py` / `compare.py`。`metrics.py` 和 `analysis.py` 是纯函数，无 I/O，可以直接单测。`compare.py` 同样是纯函数——它只认 `store.get_run` 返回的 dict，不发请求、不读文件。
+依赖方向是单向的：`app.py` → `store.py` / `metrics.py` / `analysis.py` / `compare.py` / `runner.py`。`metrics.py` 和 `analysis.py` 是纯函数，无 I/O，可以直接单测。`compare.py` 同样是纯函数——它只认 `store.get_run` 返回的 dict，不发请求、不读文件。`runner.py` 只管磁盘与进程，不读 mlruns 记录（要判断「这个 run 是不是刚跑出来的」，它调 `store.list_runs` 取差集，这是唯一的交叉点）。
 
 ## 启动
 
 ```bash
-cd examples/dashboard && ../../.venv/bin/uvicorn app:app --reload --port 8766
+cd examples/dashboard && ../../.venv/bin/uvicorn app:app --port 8766
 ```
+
+**不要加 `--reload`。** 训练队列和子进程都在 uvicorn 进程的内存里，reload 会在每次改代码时杀掉正在跑的训练。代价是改后端代码需要手动重启——比起悄悄中断一次 5 分钟的训练，这个代价更低。
+
+Windows 上：
+
+```bash
+cd examples/dashboard && MLFLOW_ALLOW_FILE_STORE=true python -m uvicorn app:app --port 8766
+```
+
+`MLFLOW_ALLOW_FILE_STORE` 是 MLflow 3.x 对 file store 后端的硬性要求，不设会直接抛异常。`.claude/launch.json` 已经配好一个 `dashboard-win` 条目。
 
 ## API
 
@@ -35,7 +46,14 @@ cd examples/dashboard && ../../.venv/bin/uvicorn app:app --reload --port 8766
 | `GET /api/runs` | 全部 run（扁平）+ 每个 run 的 `summary` 与 `config` 身份 |
 | `GET /api/runs/{run_id}` | `run` / `summary` / `verdict` / `sub` / `notes` |
 | `GET /api/compare?runs=a,b[,c,d]` | 2–4 个 run 的对照：`runs`（槽位 A–D）、`warnings`（可比性）、`sections`（八节逐行）、`param_diff` / `param_same`、`tags`、`artifacts`、`risk`、`charts`、`verdict`、`yaml` |
+| `GET /api/configs/{path}` | 磁盘上一份 YAML 的当前内容 + 它的 run 列表 + 正在跑的任务 |
+| `POST /api/run` | body `{path, repeat}`，入队并返回 `{job_id}` |
+| `GET /api/run/{job_id}` | 任务状态快照（轮询兜底）：`queued` / `running` / `done` / `failed` |
+| `GET /api/run/{job_id}/logs` | SSE 日志流，逐行推送，结束发 `event: end` |
+| `POST /api/run/{job_id}/cancel` | 终止运行中的进程，或把排队中的任务直接出队 |
 | `GET /renders/{run_id}/{filename}` | run 的 `artifacts/renders/` 下的 html |
+
+`/api/configs` 的每个分组除原有字段外还带 `path` / `dir` / `mtime` / `repeatable` / `runnable` / `job`。**磁盘上有、但还没跑完过的 YAML 也会出现在列表里**（`run_count: 0`），前端把它们归到「未运行」组。`runnable: false` 表示源文件已不在磁盘上（临时 seed 文件被删、或 YAML 改了名），这类分组只保留历史查看，不显示运行按钮。
 
 **配置身份从文件名解析。** `store._config_identity` 把 `00_baseline_s43.yaml` 归一成 key `00_baseline` + seed `43`。`run_all.py --repeat` 生成的临时文件跑完即删，只有这一步能在它消失前把 seed 提出来，否则每次重复运行都会变成一个独立配置。
 
@@ -88,6 +106,28 @@ cd examples/dashboard && ../../.venv/bin/uvicorn app:app --reload --port 8766
 
 **路径穿越防护在 store.render_path。** 只允许 `artifacts/renders/` 下的 `.html`，拒绝含斜杠或点开头的文件名。`/renders` 用专门路由而不是静态挂载 `mlruns/`，避免暴露 `pred.pkl` 等二进制。
 
+**训练触发是串行队列，不是并发池。** `runner.py` 只有一个消费者线程。qlib 每次加载二进制行情数据要吃几百 MB，两个任务并发就是 OOM——这是从 `qlib_init.kernels: 1` / `num_threads: 2` 那组省内存配置直接推出来的硬约束，不是保守。
+
+**子进程的 cwd 必须是 `examples/`。** 三个独立原因，任何一个错了都会坏：
+
+1. `qlib/cli/run.py` 把 MLflow 目录定为 `cwd/mlruns`，cwd 错了 run 就写进另一个 store，看板完全看不见；
+2. `23_custom_factors.yaml` 用 `module_path: path_exps/custom_handler.py`，`qlib/utils/mod.py` 按进程 cwd 解析；
+3. 所有配置里的相对路径都按 `examples/` 解释。
+
+**命令行参数用正斜杠相对路径。** `store._run_name` 从 `cmd-sys.argv` 按 `/` 切出文件名作为 run 名，传 Windows 反斜杠会把整条 argv 当成名字，索引分组会全部坍缩成一个。
+
+**重复运行要照抄 `path_exps/run_all.py` 的三步顺序。** 改 seed 写临时 `<name>_s<seed>.yaml` → 跑 → **先快照再删临时文件**。顺序反了，`snapshot_config.py` 找不到源文件，这个 run 的「配置原文」就永久缺失。`snapshot_config.py` 无参时只处理 `runs[:1]`，所以必须传 `--run-id`，运行前记下实验的 run id 集合、跑完取差集。
+
+**`_s<seed>` 后缀不是装饰。** `store._config_identity` 靠它把重复运行归到同一个配置下并提取 seed。临时文件用别的名字，每次重复都会变成一个独立配置。
+
+**只有 `path_exps` 支持重复次数。** `param_exps` 的 YAML 没有实验级 seed（那里的 `seed` 是 LightGBM 超参），`run_all.sh` 也没有 `--repeat`。前端只在 `repeatable: true` 时显示次数下拉，不是靠目录名在 UI 里硬编码判断。
+
+**队列只存内存。** 看板进程重启，排队和运行中的任务全丢。这是有意的取舍：持久化长任务队列要处理孤儿进程、状态恢复、重复提交，成本远高于收益——真需要长跑就用 `run_all.py`。页面上会写明这一点。
+
+**SSE 先重放再续流。** 晚订阅的客户端会先收到已缓冲的日志（最近 2000 行），再接实时行；空闲时每 15 秒发一个注释行保活，避免代理掐连接。
+
+**配置详情页读磁盘，不读快照。** 那一页回答的是「这份文件现在是什么」，运行按钮用的也是它。每个 run 的「配置原文」才是当时冻结的快照（`随 run 冻结` 徽章）。两者语义不同，不要合并。
+
 ## 做与不做
 
 **做**：直接搬静态文件、复用 `report_graphs.py`、串行任务队列。
@@ -96,6 +136,6 @@ cd examples/dashboard && ../../.venv/bin/uvicorn app:app --reload --port 8766
 
 ## 后续要加的东西
 
-1. **出图触发**：`runner.py` + SSE 日志流。比训练触发简单，但能立刻解决大部分 run 没图的现实问题。
-2. **训练触发**：同一个队列，换命令行。**必须串行**——qlib 每次加载数据吃几百 MB，并发会 OOM。
+1. **出图触发**：复用 `runner.py` 的队列，跑 `report_graphs.py --run-id`。比训练触发简单，但能立刻解决大部分 run 没图的现实问题。
+2. **队列持久化**：进程重启后恢复排队任务。要做的话得先决定孤儿进程怎么认领——`runner.py` 现在跑完不管，重启后无法判断上次的子进程是否还活着。
 3. **换手率与成本**：需要读 `report_normal_1day.pkl`，做成懒加载 + 内存缓存。

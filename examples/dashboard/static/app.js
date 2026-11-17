@@ -448,12 +448,14 @@ const state = {
   configs: [],
   current: null,        // selected run
   currentConfig: null,  // the YAML that run belongs to
+  configPath: null,     // the YAML open in the config sheet, e.g. "path_exps/00_baseline.yaml"
   detail: null,
   query: "",
   closed: new Set(),
   selected: [],         // run ids ticked for comparison, in tick order
   compare: null,        // last /api/compare payload
-  compareIds: [],       // the ids those results belong to
+  job: null,            // { job_id, path } for the drawer's stream
+  eventSource: null,
 };
 
 const MAX_COMPARE = 4;
@@ -489,10 +491,10 @@ el("pickgo").addEventListener("click", openCompare);
 el("pickclear").addEventListener("click", () => {
   state.selected = [];
   exitCompare();
-  el("specimen").hidden = !state.detail;
+  el("specimen").hidden = !state.detail || !!state.configPath;
   renderConfigs();
   renderPickBar();
-  if (state.detail) renderOutline();
+  if (state.detail && !state.configPath) renderOutline();
 });
 
 el("q").addEventListener("input", e => {
@@ -602,13 +604,17 @@ function renderConfigs() {
     )
   );
   box.innerHTML = "";
+  const exps = [...new Set(state.configs.map(c => c.experiment))];
+  const never = pool.filter(c => c.run_count === 0);
+  const ran = pool.filter(c => c.run_count > 0);
+
   if (!pool.length) {
     box.innerHTML = `<p class="index-empty">没有匹配的配置。</p>`;
     return;
   }
-  const exps = [...new Set(state.configs.map(c => c.experiment))];
+
   for (const expName of exps) {
-    const items = pool.filter(c => c.experiment === expName);
+    const items = ran.filter(c => c.experiment === expName);
     if (!items.length) continue;
     const open = !state.closed.has(expName);
     const group = document.createElement("section");
@@ -630,14 +636,29 @@ function renderConfigs() {
     for (const c of items) list.appendChild(configEntry(c));
     box.appendChild(group);
   }
+
+  // 磁盘上有、但从没跑完过的配置。单列一组，否则它们会混在实验分组里
+  // 让「这个实验跑出了什么」变得难读。
+  if (never.length) {
+    const group = document.createElement("section");
+    group.className = "index-group index-never";
+    group.innerHTML = `
+      <div class="group-toggle group-static">
+        <span class="group-label">未运行</span>
+        <span class="group-n">${never.length}</span>
+      </div>
+      <div class="cfg-list"></div>`;
+    const list = group.querySelector(".cfg-list");
+    for (const c of never) list.appendChild(configEntry(c));
+    box.appendChild(group);
+  }
 }
 
 function configEntry(c) {
   const wrap = document.createElement("section");
-  const active = state.currentConfig === c.key;
+  const active = state.configPath === c.path;
   wrap.className = "cfg-entry" + (active ? " active" : "");
-  // 选中的配置始终展开，否则才听用户的折叠状态
-  wrap.dataset.open = String(active || (c.run_count > 1 && !state.closed.has("cfg:" + c.key)));
+  if (!c.runnable) wrap.classList.add("cfg-gone");
 
   const agg = c.aggregate || {};
   // 多次运行时显示波动范围，这是判断「配置差异 vs 随机噪声」的依据
@@ -651,29 +672,20 @@ function configEntry(c) {
   const head = document.createElement("button");
   head.type = "button";
   head.className = "cfg-head-btn";
-  head.setAttribute("aria-expanded", wrap.dataset.open);
   head.innerHTML = `
     <span class="cfg-name">${esc(c.label)}</span>
-    <span class="cfg-runs-n">${c.run_count}${c.run_count > 1 ? " 次" : ""}</span>
+    ${c.run_count ? `<span class="cfg-runs-n">${c.run_count}${c.run_count > 1 ? " 次" : ""}</span>` : ""}
     <span class="cfg-metrics">
-      <span><i>IC</i>${num(c.runs[0].summary.ic)}</span>
-      ${spread}
+      ${c.run_count
+        ? `<span><i>IC</i>${num(c.runs[0].summary.ic)}</span>${spread}`
+        : `<span class="cfg-never">从未运行</span>`}
     </span>
-    <span class="cfg-date">${day(c.runs[0].start_time)}</span>`;
-  head.addEventListener("click", () => {
-    // 只有一次运行：头部本身就是选择器，不该点了没反应
-    if (c.run_count === 1) {
-      selectRun(c.runs[0].run_id, c.key);
-      return;
-    }
-    const openNow = wrap.dataset.open === "true";
-    if (openNow) state.closed.add("cfg:" + c.key); else state.closed.delete("cfg:" + c.key);
-    wrap.dataset.open = String(!openNow);
-    head.setAttribute("aria-expanded", String(!openNow));
-  });
+    <span class="cfg-date">${c.run_count ? day(c.runs[0].start_time) : day(c.mtime * 1000)}</span>`;
+  head.title = c.runnable ? "查看配置文件并运行" : "源文件已不在磁盘上，只能看历史记录";
+  head.addEventListener("click", () => openConfig(c.path));
 
-  // 只跑过一次的配置没有展开的 run 行，勾选框就挂在配置行上——
-  // 否则这类配置（比如换了模型的那个）永远进不了对照。
+  // 只跑过一次的配置：勾选框挂在配置行上，否则这类配置进不了对照。
+  // 多次运行的配置，勾选框在各 run 行上——配置行现在打开 YAML，不再展开。
   if (c.run_count === 1) {
     const only = c.runs[0];
     const picked = state.selected.includes(only.run_id);
@@ -698,65 +710,70 @@ function configEntry(c) {
     row.dataset.run = only.run_id;
     row.append(box, head, tag);
     wrap.appendChild(row);
-  } else {
-    wrap.appendChild(head);
+    return wrap;
   }
 
-  const runs = document.createElement("ul");
-  runs.className = "cfg-runs";
-  for (const r of c.runs) {
-    const li = document.createElement("li");
-    const row = document.createElement("div");
-    row.className = "run-row";
-    row.dataset.run = r.run_id;
+  wrap.appendChild(head);
 
-    const picked = state.selected.includes(r.run_id);
-    const slot = slotOf(r.run_id);
-    const slotIdx = state.selected.indexOf(r.run_id);
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.className = "pick-box";
-    box.dataset.run = r.run_id;
-    box.checked = picked;
-    box.disabled = !picked && state.selected.length >= MAX_COMPARE;
-    box.title = picked ? "取消对比" : "勾选后参与对比";
-    box.setAttribute("aria-label", `勾选 ${r.name} 参与对比`);
-    box.addEventListener("change", () => togglePick(r.run_id));
-
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "run-entry";
-    b.setAttribute("aria-current", String(state.current && r.run_id === state.current.run_id));
-    const s = r.summary || {};
-    const seedTag = r.seed ? `<span class="run-seed">seed ${esc(r.seed)}</span>` : "";
-    // 同一配置的多次运行常常同名（就是同一个文件名），用时间 + id 短码区分
-    const runLabel = r.seed ? `种子 ${esc(r.seed)}` : `${day(r.start_time)} · ${esc(r.run_id.slice(0, 6))}`;
-    b.innerHTML = `
-      <span class="run-top">
-        <span class="run-name">${runLabel}</span>
-        ${seedTag}
-        <span class="run-date">${day(r.start_time)}</span>
-      </span>
-      <span class="run-line">
-        <span><i>IC</i>${num(s.ic)}</span>
-        <span><i>年化</i>${pct(s.ann_cost)}</span>
-        <span><i>IR</i>${num(s.ir_cost, 2)}</span>
-        <span class="dot ${r.has_renders ? "on" : ""}" title="${r.has_renders ? "有图表" : "无图表"}"></span>
-        <span class="slot-tag${slot ? ` ${SLOT_COLORS[slotIdx % 2]}${slotIdx >= 2 ? " dash" : ""}` : ""}"${
-          slot ? "" : " hidden"}>${slot || ""}</span>
-      </span>`;
-    b.addEventListener("click", () => selectRun(r.run_id, c.key));
-    row.append(box, b);
-    li.appendChild(row);
-    runs.appendChild(li);
+  if (c.run_count > 1) {
+    const runs = document.createElement("ul");
+    runs.className = "cfg-runs";
+    for (const r of c.runs) runs.appendChild(runLine(c, r));
+    wrap.appendChild(runs);
   }
-
-  if (c.run_count > 1) wrap.appendChild(runs);
   return wrap;
+}
+
+function runLine(c, r) {
+  const li = document.createElement("li");
+  const row = document.createElement("div");
+  row.className = "run-row";
+  row.dataset.run = r.run_id;
+
+  const picked = state.selected.includes(r.run_id);
+  const slot = slotOf(r.run_id);
+  const slotIdx = state.selected.indexOf(r.run_id);
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.className = "pick-box";
+  box.dataset.run = r.run_id;
+  box.checked = picked;
+  box.disabled = !picked && state.selected.length >= MAX_COMPARE;
+  box.title = picked ? "取消对比" : "勾选后参与对比";
+  box.setAttribute("aria-label", `勾选 ${r.name} 参与对比`);
+  box.addEventListener("change", () => togglePick(r.run_id));
+
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "run-entry";
+  b.setAttribute("aria-current", String(state.current && r.run_id === state.current.run_id));
+  const s = r.summary || {};
+  const seedTag = r.seed ? `<span class="run-seed">seed ${esc(r.seed)}</span>` : "";
+  // 同一配置的多次运行常常同名（就是同一个文件名），用时间 + id 短码区分
+  const runLabel = r.seed ? `种子 ${esc(r.seed)}` : `${day(r.start_time)} · ${esc(r.run_id.slice(0, 6))}`;
+  b.innerHTML = `
+    <span class="run-top">
+      <span class="run-name">${runLabel}</span>
+      ${seedTag}
+      <span class="run-date">${day(r.start_time)}</span>
+    </span>
+    <span class="run-line">
+      <span><i>IC</i>${num(s.ic)}</span>
+      <span><i>年化</i>${pct(s.ann_cost)}</span>
+      <span><i>IR</i>${num(s.ir_cost, 2)}</span>
+      <span class="dot ${r.has_renders ? "on" : ""}" title="${r.has_renders ? "有图表" : "无图表"}"></span>
+      <span class="slot-tag${slot ? ` ${SLOT_COLORS[slotIdx % 2]}${slotIdx >= 2 ? " dash" : ""}` : ""}"${
+        slot ? "" : " hidden"}>${slot || ""}</span>
+    </span>`;
+  b.addEventListener("click", () => selectRun(r.run_id, c.key));
+  row.append(box, b);
+  li.appendChild(row);
+  return li;
 }
 
 async function selectRun(runId, configKey) {
   exitCompare();   // clicking a run row always means "read this one"
+  closeConfigSheet();
   state.current = null;
   state.currentConfig = configKey || (state.configs.find(c => c.runs.some(r => r.run_id === runId)) || {}).key || null;
   renderConfigs();
@@ -781,18 +798,331 @@ async function selectRun(runId, configKey) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   Config sheet: the YAML itself, and the button that runs it.
+
+   Third main view next to the specimen and the comparison. The YAML is the
+   source of truth on disk (not a run's snapshot), so the page answers "what
+   does this file say right now" — and the same text is what a launch will
+   use. Highlighting reuses yamlHTML(), the same function the specimen's
+   「配置原文」 section uses, so the two views read identically.
+   ═══════════════════════════════════════════════════════════════════ */
+
+function closeConfigSheet() {
+  if (!state.configPath) return;
+  state.configPath = null;
+  el("config").hidden = true;
+  el("config").innerHTML = "";
+}
+
+function showOnly(pane) {
+  el("specimen").hidden = pane !== "specimen";
+  el("comparison").hidden = pane !== "comparison";
+  el("config").hidden = pane !== "config";
+  el("loading").hidden = true;
+  if (pane !== "specimen" && state.detail) {
+    el("specimen").innerHTML = "";   // 三个页面同时在 DOM 里会出现重复 id 和重复 Plotly iframe
+  }
+  if (pane !== "comparison") el("comparison").innerHTML = "";
+  if (pane !== "config") el("config").innerHTML = "";
+}
+
+async function openConfig(path) {
+  if (!path) return;
+  exitCompare();
+  state.configPath = path;
+  showOnly("config");
+  renderConfigs();
+  el("config").hidden = false;
+  el("config").innerHTML = `<p class="loading">读取配置…</p>`;
+
+  let d;
+  try {
+    const res = await fetch(`/api/configs/${path.split("/").map(encodeURIComponent).join("/")}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || res.status);
+    }
+    d = await res.json();
+  } catch (e) {
+    el("config").innerHTML = `<p class="loading">读取失败：${esc(e.message)}</p>`;
+    return;
+  }
+  state.configDetail = d;
+  el("config").innerHTML = renderConfigSheet(d);
+  wireConfigSheet(d);
+  renderOutline();
+  window.scrollTo({ top: 0, behavior: "instant" });
+}
+
+function renderConfigSheet(d) {
+  const job = d.job;
+  const runRows = d.runs.length
+    ? d.runs.map(r => `
+        <tr>
+          <td class="cfg-run-when">${day(r.start_time)}</td>
+          <td>${r.seed ? `种子 ${esc(r.seed)}` : `<code>${esc(r.run_id.slice(0, 6))}</code>`}</td>
+          <td class="cfg-run-num">${num(r.summary && r.summary.ic)}</td>
+          <td class="cfg-run-num">${pct(r.summary && r.summary.ann_cost)}</td>
+          <td class="cfg-run-num">${num(r.summary && r.summary.ir_cost, 2)}</td>
+          <td class="cfg-run-go"><button class="linkish" type="button" data-run="${esc(r.run_id)}">打开</button></td>
+        </tr>`).join("")
+    : `<tr><td colspan="6" class="cfg-empty">这个配置还没有跑出过 run。</td></tr>`;
+
+  const status = job ? jobBanner(job) : "";
+
+  return `
+    <header class="cfg-sheet-id">
+      <p class="cfg-sheet-crumb">${esc(d.dir)} / <span>${esc(d.label)}</span></p>
+      <h1 class="cfg-sheet-title">${esc(d.label)}</h1>
+      <div class="cfg-sheet-actions">
+        ${status}
+        ${d.runnable === false ? "" : `
+        <div class="run-box" id="runbox">
+          <button class="run-go" id="runtoggle" type="button" aria-expanded="false">
+            <span>运行</span><span class="run-caret" aria-hidden="true">▾</span>
+          </button>
+          <div class="run-panel" id="runpanel" hidden>
+            ${d.repeatable ? `
+            <label class="run-row-in">
+              <span>重复次数</span>
+              <select id="runrepeat">
+                <option value="1" selected>1 次</option>
+                <option value="3">3 次（seed 42–44）</option>
+                <option value="5">5 次（seed 42–46）</option>
+              </select>
+            </label>` : ""}
+            <p class="run-hint">${d.repeatable
+              ? "重复运行会改写 seed 并各自入库；不重复则直接用文件里的 seed。"
+              : "这份配置没有实验 seed 变量，只跑一次。"}</p>
+            <p class="run-error" id="runerror" hidden></p>
+            <button class="run-start" id="runstart" type="button">开始运行</button>
+          </div>
+        </div>`}
+      </div>
+    </header>
+
+    <section class="act" data-act="yaml">
+      <h2 class="act-head"><span class="act-no">一</span>配置原文</h2>
+      <p class="act-lede">页面展示的就是磁盘上这份文件，运行按钮用它启动训练。改动文件后刷新即可看到新内容。</p>
+      <div class="cfg-head">
+        <code class="cfg-path">examples/${esc(d.path)}</code>
+        <span class="cfg-stat">${d.lines} 行 · 最近修改 ${day(d.mtime * 1000)}</span>
+      </div>
+      <div class="cfg-origin-row">
+        <span class="cfg-badge disk">读自磁盘</span>
+        <span class="cfg-origin-note">这是配置源文件当前的内容；每个 run 的「配置原文」是它跑时冻结的快照。</span>
+      </div>
+      <pre class="yaml cfg-yaml" tabindex="0">${yamlHTML(d.yaml)}</pre>
+    </section>
+
+    <section class="act" data-act="runs">
+      <h2 class="act-head"><span class="act-no">二</span>该配置的运行</h2>
+      <p class="act-lede">同一份 YAML 的每次运行。点「打开」进入那一次实验的解剖页。</p>
+      <table class="cfg-runs-table">
+        <thead><tr><th>时间</th><th>run</th><th>IC</th><th>年化</th><th>IR</th><th></th></tr></thead>
+        <tbody>${runRows}</tbody>
+      </table>
+    </section>`;
+}
+
+function jobBanner(job) {
+  const text = job.status === "running" ? "运行中"
+    : job.status === "queued" ? "排队中"
+    : job.status === "done" ? "已完成" : "失败";
+  return `<span class="run-badge ${esc(job.status)}" data-job="${esc(job.id)}">
+    <span class="run-badge-dot" aria-hidden="true"></span>${text}
+    <button class="linkish run-badge-log" type="button" data-log="${esc(job.id)}">日志</button>
+  </span>`;
+}
+
+function wireConfigSheet(d) {
+  const toggle = el("runtoggle");
+  if (toggle) {
+    toggle.addEventListener("click", () => {
+      const panel = el("runpanel");
+      const open = panel.hidden;
+      panel.hidden = !open;
+      toggle.setAttribute("aria-expanded", String(open));
+    });
+  }
+  const start = el("runstart");
+  if (start) start.addEventListener("click", () => {
+    const sel = el("runrepeat");
+    startRun(d.path, sel ? Number(sel.value) : 1);
+  });
+
+  el("config").querySelectorAll("button[data-run]").forEach(b => {
+    b.addEventListener("click", () => selectRun(b.dataset.run, d.label));
+  });
+  el("config").querySelectorAll("button[data-log]").forEach(b => {
+    b.addEventListener("click", () => openDrawer(b.dataset.log, d.path));
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Launching a run, and the log drawer.
+
+   The queue lives in the uvicorn process, not the browser: closing the page
+   or the drawer does not stop training. Reloading the server does — the
+   queue is in memory on purpose (see runner.py).
+   ═══════════════════════════════════════════════════════════════════ */
+
+async function startRun(path, repeat) {
+  let jobId;
+  try {
+    const res = await fetch("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, repeat }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || res.status);
+    }
+    jobId = (await res.json()).job_id;
+  } catch (e) {
+    const box = el("runerror");
+    if (box) {
+      box.textContent = `无法启动：${e.message}`;
+      box.hidden = false;
+    }
+    return;
+  }
+  const box = el("runerror");
+  if (box) box.hidden = true;
+  state.job = { job_id: jobId, path };
+  openDrawer(jobId, path);
+  refreshConfigsSoon();
+}
+
+function openDrawer(jobId, path) {
+  state.job = { job_id: jobId, path };
+  const root = el("rundrawer");
+  root.hidden = false;
+  root.classList.remove("done", "failed");
+  el("drawertitle").textContent = path;
+  el("drawermeta").textContent = "连接中";
+  el("drawerlog").textContent = "";
+  logLines = 0;
+  el("drawerfoot").hidden = true;
+  el("drawerfoot").innerHTML = "";
+  el("drawercancel").hidden = false;
+
+  if (state.eventSource) state.eventSource.close();
+  const es = new EventSource(`/api/run/${encodeURIComponent(jobId)}/logs`);
+  state.eventSource = es;
+
+  es.onmessage = ev => {
+    appendLog(ev.data);
+    el("drawermeta").textContent = "运行中";
+  };
+  es.addEventListener("end", () => {
+    es.close();
+    state.eventSource = null;
+    finishDrawer(jobId, path);
+  });
+  es.onerror = () => {
+    // EventSource 会自己重连；连接真的断了就别再空转
+    if (es.readyState === EventSource.CLOSED) finishDrawer(jobId, path);
+  };
+}
+
+const MAX_LOG_LINES = 4000;
+let logLines = 0;
+
+function appendLog(line) {
+  const box = el("drawerlog");
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.textContent += (box.textContent ? "\n" : "") + line;
+  logLines += 1;
+  // 一次训练能刷出上千行；DOM 里留太多会让滚动变卡。超限时从头砍掉一半，
+  // 代价是看不了最早的那段——服务端环形缓冲仍保留最近 2000 行。
+  if (logLines > MAX_LOG_LINES) {
+    const lines = box.textContent.split("\n");
+    const keep = lines.slice(Math.floor(lines.length / 2));
+    box.textContent = "…（较早的日志已省略）\n" + keep.join("\n");
+    logLines = keep.length + 1;
+  }
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+async function finishDrawer(jobId, path) {
+  let state_;
+  try {
+    const r = await fetch(`/api/run/${encodeURIComponent(jobId)}`);
+    state_ = await r.json();
+  } catch (e) {
+    state_ = null;
+  }
+  const root = el("rundrawer");
+  const ok = state_ && state_.status === "done";
+  root.classList.add(ok ? "done" : "failed");
+  el("drawermeta").textContent = state_
+    ? (ok ? "已完成" : `失败${state_.exit_code != null ? ` · 退出码 ${state_.exit_code}` : ""}`)
+    : "已结束";
+  el("drawercancel").hidden = true;
+
+  const foot = el("drawerfoot");
+  foot.hidden = false;
+  foot.innerHTML = ok
+    ? `运行结束。<button class="linkish" type="button" id="draweropens">刷新并查看新 run</button>`
+    : `运行失败，日志末尾是原因。<button class="linkish" type="button" id="draweropens">重试</button>`;
+  const btn = el("draweropens");
+  if (btn) btn.addEventListener("click", async () => {
+    await reloadConfigs();
+    if (ok) {
+      const c = state.configs.find(x => x.path === path);
+      if (c && c.newest_run_id) selectRun(c.newest_run_id, c.key);
+    } else if (state.configPath === path) {
+      openConfig(path);
+    }
+    el("rundrawer").hidden = true;
+  });
+
+  refreshConfigsSoon();
+}
+
+async function reloadConfigs() {
+  try {
+    const res = await fetch("/api/configs");
+    if (!res.ok) return;
+    state.configs = await res.json();
+  } catch (e) {
+    return;
+  }
+  const exps = [...new Set(state.configs.map(c => c.experiment))];
+  const totalRuns = state.configs.reduce((n, c) => n + c.run_count, 0);
+  el("meta").textContent = `${state.configs.length} 个配置 · ${totalRuns} 个 run · ${exps.length} 个实验`;
+  renderConfigs();
+  renderPickBar();
+}
+
+let refreshTimer = null;
+function refreshConfigsSoon() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(reloadConfigs, 1500);
+}
+
+el("drawerclose").addEventListener("click", () => { el("rundrawer").hidden = true; });
+el("drawercancel").addEventListener("click", async () => {
+  if (!state.job) return;
+  try {
+    await fetch(`/api/run/${encodeURIComponent(state.job.job_id)}/cancel`, { method: "POST" });
+  } catch (e) { /* 取消失败就让训练自然结束 */ }
+});
+
+/* ═══════════════════════════════════════════════════════════════════
    Compare view: N runs, one row per field, colour only where they differ.
    ═══════════════════════════════════════════════════════════════════ */
 
 function exitCompare() {
   if (!state.compare) return;
   state.compare = null;
-  state.compareIds = [];
   el("comparison").hidden = true;
   el("comparison").innerHTML = "";
-  el("specimen").hidden = !state.detail;
+  el("specimen").hidden = !state.detail || !!state.configPath;
   // 打开对照时解剖页的 DOM 被清掉了，回来必须重绘
-  if (state.detail) {
+  if (state.detail && !state.configPath) {
     plateNo = 0;
     renderSpecimen();
     renderOutline();
@@ -802,8 +1132,12 @@ function exitCompare() {
 async function openCompare() {
   const ids = [...state.selected];
   if (ids.length < 2) return;
+  closeConfigSheet();
+  state.compareIds = ids;
   el("specimen").hidden = true;
   el("specimen").innerHTML = "";   // 两页同时留在 DOM 里会出现重复 id 和重复的 Plotly iframe
+  el("config").hidden = true;
+  el("config").innerHTML = "";
   el("comparison").hidden = false;
   el("loading").hidden = false;
   el("loading").textContent = `读取 ${ids.length} 个 run 并对照…`;
@@ -1859,18 +2193,21 @@ function observePlots() {
 
 const ACT_LABEL = {
   id: "身份", repeat: "同配置运行", setting: "实验设置", config: "配置原文",
-  params: "配置差异",
+  params: "配置差异", yaml: "配置原文", runs: "该配置的运行",
   signal: "信号", execution: "执行",
   outcome: "结果", training: "训练", figures: "官方图表",
   record: "原始记录", provenance: "出处",
 };
 
 function renderOutline() {
-  // 只列当前可见容器的章节：解剖页隐藏时它的章节不该出现在目录里。
-  // 两个容器不能同时持有同一个 id，否则 getElementById 会命中隐藏的那个。
-  const scope = state.compare ? el("comparison") : el("specimen");
-  const other = state.compare ? el("specimen") : el("comparison");
-  other.querySelectorAll(".act[id]").forEach(a => a.removeAttribute("id"));
+  // 只列当前可见容器的章节：隐藏页面的章节不该出现在目录里。
+  // 容器不能同时持有同一个 id，否则 getElementById 会命中隐藏的那个。
+  const panes = ["specimen", "comparison", "config"];
+  const active = state.configPath ? "config" : state.compare ? "comparison" : "specimen";
+  const scope = el(active);
+  for (const p of panes) {
+    if (p !== active) el(p).querySelectorAll(".act[id]").forEach(a => a.removeAttribute("id"));
+  }
   const acts = [...scope.querySelectorAll(".act")]
     .map(a => a.dataset.act)
     .filter(Boolean);

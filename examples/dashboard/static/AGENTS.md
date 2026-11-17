@@ -58,8 +58,11 @@ static/
 
 ### 交互
 
-- 左栏索引：**以 YAML 为维度**。实验 → 配置 → 该配置的多次运行。配置是一行，显示 IC、运行次数、多次运行时的 IC 极差；只有一个 run 时点配置行直接选中，多个 run 时展开后逐个切换
+- 左栏索引：**以 YAML 为维度**。实验 → 配置，配置是一行，显示 IC、运行次数、多次运行时的 IC 极差；磁盘上有但从没跑过的 YAML 归到末尾的「未运行」组
+- **点配置行 = 打开配置页**，不再展开/收起。配置页是第三种主视图（另外两种是解剖页和对照页）：上半是磁盘上这份 YAML 的完整原文（带注释），右上角是「运行」按钮，下半是该配置的 run 列表。多次运行的配置仍在左栏列出每个 run 行，直接点 run 行进解剖页 
 - **勾选对比**：每个 run 行左侧有方块勾选框（只跑一次的配置，勾选框挂在配置行上），勾中的显示槽位徽标 A/B/C/D，左下角粘性对比条可「开始对照 / 清空」。上限 4 个
+- **配置页**：YAML 原文按行着色，与解剖页「配置原文」用同一个 `yamlHTML()`，所以两处读起来一致。右上的实心靛蓝按钮是全页唯一的实心控件——它是唯一会改变状态的动作。点开是一个小面板（不是 modal）：可选重复次数（只有 `repeatable` 的配置才显示），点「开始运行」后底部升起日志抽屉
+- **日志抽屉**：`40vh`，SSE 逐行追加，可关闭而不中断训练。抬头显示运行中/已完成/失败，完成后脚注提供「刷新并查看新 run」。失败时抬头转赭色
 - **对照页**：右侧整页换成「行是字段、列是 run」的八节表格。赭色 = 该值不同，靛蓝下划线 = 该行最优，虚线框「缺」= 该 run 没有此项。点 run 行、按 Esc 或「返回单 run 视图」均可退出，勾选保留
 - 页面顶部有「同配置运行」区：列出该 YAML 的所有 run 与极差，并判断当前 run 是否偏离正常范围
 - 左栏底部是页面目录，点击平滑跳转（目录只列当前可见那一页的章节）
@@ -68,11 +71,17 @@ static/
 
 ## 代码约定
 
-**状态集中在一个 `state` 对象**：`configs` / `current` / `currentConfig` / `detail` / `query` / `closed` / `selected` / `compare` / `compareIds`。改状态后显式调对应的 `render*()`，不做响应式绑定。
+**状态集中在一个 `state` 对象**：`configs` / `current` / `currentConfig` / `configPath` / `detail` / `query` / `closed` / `selected` / `compare` / `job` / `eventSource`。改状态后显式调对应的 `render*()`，不做响应式绑定。
+
+**三个主视图互斥，同一时刻只有一个持有 `act-*` id。** `#specimen`（解剖）、`#comparison`（对照）、`#config`（配置页）。切走时把离开那个容器的 `innerHTML` 清空——否则会留下重复 id 和重复的 Plotly iframe，`getElementById` 与 `scrollIntoView` 会命中隐藏的那个。`selectRun` / `openConfig` / `openCompare` 各自先清场，`showOnly()` 统一处理。
+
+**YAML 着色只有一个实现：`yamlHTML()`。** 解剖页的「配置原文」和配置页的全文都用它，先转义后包裹。配置页把 `details` 展开、注释色提亮一级（`.cfg-yaml .y-comment`），其余完全一致——同一个文件在两处看起来一样，读者不用学第二套。
 
 **勾选状态就地更新，不重绘索引。** `syncPickBoxes` 改已有 checkbox 的 `checked` / `disabled` 和槽位徽标。若改成 `renderConfigs()`，被点击的那个 checkbox 会在 `change` 事件中途被销毁，浏览器随即把它回退成未勾选，并触发第二次 `change`——实测过，会「点一下勾上又自己取消」。
 
-**两个容器不能同时持有同一个 `id`。** 解剖页和对照页都在 DOM 里，`renderOutline` 只给当前可见容器设 `act-*` id，并清掉另一个的，否则 `getElementById` 会命中隐藏的那个（实测过 `scrollIntoView` 定位到不可见章节）。
+**两个容器不能同时持有同一个 `id`。** 解剖页和对照页都在 DOM 里，`renderOutline` 只给当前可见容器设 `act-*` id，并清掉另一个的，否则 `getElementById` 会命中隐藏的那个（实测过 `scrollIntoView` 定位到不可见章节）。现在有三个容器，规则不变：`renderOutline` 按 `state.configPath` / `state.compare` 选出 active，清掉另外两个的 id。
+
+**运行不经过浏览器。** 点「开始运行」只是 `POST /api/run`；训练是 uvicorn 进程里的子进程。关掉页面或抽屉都不影响它，看板重启才会丢队列。抽屉里的 `EventSource` 只负责看日志，断线时浏览器会自动重连。
 
 **对照页不做任何计算。** 差异、最优、缺失都由 `/api/compare` 标好（`same` / `best` / `always_diff`），这里只格式化。`fmtCell` 按后端给的 `kind` 选格式。
 

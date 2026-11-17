@@ -1983,3 +1983,392 @@ pre.yd-doc {
   .pick-bar { margin: 12px 0 0; padding: 10px 0; position: static; }
   .lg-key { margin-left: 0; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Config sheet: the YAML on disk, and the one control that changes state.
+
+   Everything here reuses the specimen's vocabulary — same hairlines, same
+   two accents, same yamlHTML() output. The only new visual weight is the
+   solid indigo run button, which is deliberately the single filled control
+   on the page: it is the only action that does work outside the browser.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.config-sheet {
+  max-width: var(--sheet-w);
+}
+
+.cfg-sheet-id {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 24px;
+  padding: 10px 0 14px;
+  margin: -10px 0 0;
+  background: var(--paper);
+  border-bottom: 1.5px solid var(--ink);
+}
+
+.cfg-sheet-crumb {
+  grid-column: 1;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+}
+.cfg-sheet-crumb span { color: var(--ink-2); }
+
+.cfg-sheet-title {
+  grid-column: 1;
+  margin: 2px 0 0;
+  font-family: var(--serif);
+  font-size: 31px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.cfg-sheet-actions {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* --- the run control -------------------------------------------- */
+
+.run-box { position: relative; }
+
+.run-go {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 7px 15px 8px;
+  font-family: var(--sans);
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--plate);
+  background: var(--indigo);
+  border: 1px solid var(--indigo);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.run-go:hover { background: #162D4B; }
+.run-caret { font-size: 9px; opacity: .75; }
+.run-go[aria-expanded="true"] .run-caret { transform: rotate(180deg); }
+
+.run-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  width: 258px;
+  padding: 12px 13px 13px;
+  background: var(--plate);
+  border: 1px solid var(--ink);
+  box-shadow: 0 10px 30px rgba(18, 26, 34, .13);
+  text-align: left;
+}
+
+.run-row-in {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.run-row-in select {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  padding: 3px 5px;
+  min-width: 112px;
+}
+
+.run-hint {
+  margin: 10px 0 0;
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--ink-3);
+}
+
+.run-error {
+  margin: 9px 0 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ochre);
+}
+
+.run-start {
+  width: 100%;
+  margin-top: 12px;
+  padding: 7px 0 8px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--plate);
+  background: var(--indigo);
+  border: 1px solid var(--indigo);
+  cursor: pointer;
+}
+.run-start:hover { background: #162D4B; }
+
+/* --- status badge shown while a job is queued or running --------- */
+
+.run-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-2);
+  padding: 3px 0 3px 8px;
+  border-left: 2px solid var(--line);
+}
+.run-badge.queued { border-left-color: var(--ink-3); }
+.run-badge.running { border-left-color: var(--indigo); }
+.run-badge.done { border-left-color: var(--pos); }
+.run-badge.failed { border-left-color: var(--ochre); color: var(--ochre); }
+
+.run-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.run-badge.running .run-badge-dot { animation: pulse 1.6s ease-in-out infinite; }
+.run-badge.queued .run-badge-dot { background: var(--ink-3); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .25; }
+}
+
+.run-badge-log { font-size: 11px; }
+
+/* --- the YAML block --------------------------------------------- */
+
+.cfg-yaml {
+  max-height: none;          /* 配置页就是用来通读的，不要折叠 */
+  border: 1px solid var(--line-2);
+  border-top: 0;
+  padding-left: 14px;
+  border-left: 2px solid var(--line);
+}
+
+.cfg-origin-note {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+/* The config sheet is read, not skimmed: comments are the main content here
+   (they explain every knob), so they get more contrast than the specimen's
+   collapsed copy. Key colour is unchanged. */
+.cfg-yaml .y-comment { color: var(--ink-2); }
+.cfg-yaml .y-colon { color: var(--ink-3); }
+
+/* --- runs produced by this config ------------------------------- */
+
+.cfg-runs-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--line-2);
+  font-size: 12px;
+}
+
+.cfg-runs-table thead th {
+  padding: 7px 10px;
+  text-align: left;
+  font-family: var(--sans);
+  font-weight: 400;
+  font-size: 10.5px;
+  color: var(--ink-3);
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--line-2);
+  white-space: nowrap;
+}
+
+.cfg-runs-table tbody td {
+  padding: 7px 10px;
+  border-top: 1px solid var(--line-2);
+  color: var(--ink);
+  vertical-align: baseline;
+}
+
+.cfg-runs-table tbody tr:first-child td { border-top: 0; }
+.cfg-runs-table tbody tr:hover { background: rgba(255, 255, 255, .55); }
+
+.cfg-run-when, .cfg-run-num {
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+.cfg-run-when { color: var(--ink-3); white-space: nowrap; }
+.cfg-run-num { text-align: right; }
+.cfg-run-go { text-align: right; width: 1%; white-space: nowrap; }
+
+.cfg-empty {
+  padding: 16px 10px;
+  font-size: 12px;
+  color: var(--ink-3);
+  text-align: left;
+}
+
+/* --- index: never-run group and run-less configs ---------------- */
+
+.index-never .group-static {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 8px 7px 10px;
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--line-2);
+  margin-bottom: 4px;
+}
+.index-never .group-static .group-label { flex: 1 1 auto; }
+
+.cfg-never {
+  font-family: var(--sans);
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.cfg-entry.cfg-gone .cfg-head-btn { opacity: .62; }
+.cfg-entry.cfg-gone .cfg-head-btn:hover { opacity: 1; }
+
+/* ═══ log drawer ═══ */
+
+.run-drawer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  height: 40vh;
+  min-height: 240px;
+  background: var(--ink);
+  color: #D8DEE4;
+  border-top: 1px solid var(--ink);
+  box-shadow: 0 -12px 34px rgba(18, 26, 34, .22);
+}
+
+.drawer-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 16px 9px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, .12);
+  flex: none;
+}
+
+.drawer-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--indigo);
+  flex: none;
+  align-self: center;
+}
+.run-drawer.done .drawer-dot { background: var(--pos); }
+.run-drawer.failed .drawer-dot { background: var(--ochre); }
+
+.drawer-title {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: #F0F3F6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: rgba(216, 222, 228, .62);
+  white-space: nowrap;
+}
+
+.drawer-btn {
+  margin-left: auto;
+  font-family: var(--sans);
+  font-size: 11px;
+  color: rgba(216, 222, 228, .8);
+  background: none;
+  border: 1px solid rgba(255, 255, 255, .22);
+  padding: 2px 9px;
+  cursor: pointer;
+}
+.drawer-btn:hover { color: #fff; border-color: rgba(255, 255, 255, .5); }
+
+.drawer-x {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  font-size: 16px;
+  line-height: 1;
+  color: rgba(216, 222, 228, .72);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  align-self: center;
+}
+.drawer-x:hover { color: #fff; }
+.drawer-btn + .drawer-x { margin-left: 0; }
+
+.drawer-log {
+  margin: 0;
+  padding: 11px 18px 14px;
+  flex: 1 1 auto;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.62;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #C8D0D8;
+  tab-size: 4;
+}
+
+.drawer-foot {
+  flex: none;
+  padding: 9px 18px;
+  border-top: 1px solid rgba(255, 255, 255, .12);
+  font-family: var(--sans);
+  font-size: 11.5px;
+  color: rgba(216, 222, 228, .8);
+}
+.drawer-foot .linkish { color: #9FB6D4; border-bottom-color: transparent; }
+.drawer-foot .linkish:hover { border-bottom-color: currentColor; }
+
+@media (max-width: 1080px) {
+  .cfg-sheet-id { grid-template-columns: minmax(0, 1fr); }
+  .cfg-sheet-actions { grid-column: 1; grid-row: auto; align-items: flex-start; margin-top: 10px; }
+  .run-panel { left: 0; right: auto; }
+}
+
+@media (max-width: 820px) {
+  .cfg-sheet-title { font-size: 25px; }
+  .run-drawer { height: 50vh; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-badge.running .run-badge-dot { animation: none; }
+}
+
