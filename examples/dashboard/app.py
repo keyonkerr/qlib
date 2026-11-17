@@ -18,11 +18,12 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi import FastAPI, HTTPException, Query  # noqa: E402
 from fastapi.responses import FileResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 import analysis  # noqa: E402
+import compare  # noqa: E402
 import metrics  # noqa: E402
 import store  # noqa: E402
 
@@ -107,6 +108,26 @@ def api_run(run_id: str) -> dict:
         "sub": analysis.sub(run, s, base),
         "notes": analysis.notes(run, s, base),
     }
+
+
+@app.get("/api/compare")
+def api_compare(runs: str = Query(..., description="逗号分隔的 run id，2–4 个")) -> dict:
+    """Two to four runs, aligned row by row and marked where they differ."""
+    ids = [r for r in (t.strip() for t in runs.split(",")) if r]
+    if len(ids) < 2:
+        raise HTTPException(status_code=400, detail="至少选择 2 个 run")
+    if len(ids) > compare.MAX_RUNS:
+        raise HTTPException(status_code=400, detail=f"最多对比 {compare.MAX_RUNS} 个 run")
+    if len(set(ids)) != len(ids):
+        raise HTTPException(status_code=400, detail="run 不能重复")
+
+    run_list = []
+    for rid in ids:
+        run = store.get_run(rid)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"run {rid} not found")
+        run_list.append(run)
+    return compare.build(run_list)
 
 
 @app.get("/renders/{run_id}/{filename}")

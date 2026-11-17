@@ -1527,3 +1527,459 @@ table.repeat tfoot th { font-family: var(--sans); font-weight: 400; }
 
 .cfg-spread.same { color: var(--ink-3); }
 .spread-cell.same { color: var(--ink-3); }
+
+/* ═══════════════════════════════════════════════════════════════════
+   对照页 — tick runs on the left, read them as columns on the right.
+
+   Same measurement sheet, different grammar: rows are fields, columns are
+   runs. Ochre keeps its one existing job — "this differs / watch out" — so
+   a differing cell is ochre and an identical one stays plain ink. The best
+   cell in a directional row gets a 1px indigo underline (indigo is already
+   the measured/leading colour).
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* --- tick box on the run row --- */
+
+.run-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.pick-box {
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  margin: 12px 0 0 4px;
+  border: 1px solid var(--line);
+  background: var(--plate);
+  border-radius: 0;
+  cursor: pointer;
+  align-self: start;
+  position: relative;
+  flex: none;
+}
+
+.pick-box:hover { border-color: var(--indigo); }
+
+.pick-box:checked {
+  background: var(--indigo);
+  border-color: var(--indigo);
+}
+
+.pick-box:checked::after {
+  content: "";
+  position: absolute;
+  left: 3px; top: 0;
+  width: 3px; height: 7px;
+  border: solid var(--plate);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(42deg);
+}
+
+.pick-box:disabled { opacity: .32; cursor: not-allowed; }
+
+.run-row .run-entry { padding-left: 4px; }
+
+/* 只跑过一次的配置：勾选框挂在配置行上，左栏那一条才算可勾选 */
+.run-row.cfg-row { grid-template-columns: 22px minmax(0, 1fr) auto; align-items: start; }
+.run-row.cfg-row .pick-box { margin-top: 9px; }
+.run-row.cfg-row .cfg-head-btn { padding-left: 4px; }
+.cfg-slot { margin: 11px 8px 0 0; }
+
+/* slot tag: A/B indigo, C/D ochre dashed — mirrors the chart line styles */
+.slot-tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  line-height: 1.5;
+  padding: 0 3px;
+  letter-spacing: 0.04em;
+  flex: none;
+  border: 1px solid currentColor;
+}
+
+.slot-tag.indigo { color: var(--indigo); }
+.slot-tag.ochre  { color: var(--ochre); }
+.slot-tag.dash   { border-style: dashed; }
+
+.run-line .slot-tag { margin-left: 2px; align-self: center; }
+
+/* --- the sticky pick bar --- */
+
+.pick-bar {
+  position: sticky;
+  bottom: 0;
+  margin: 14px -20px -40px -28px;
+  padding: 10px 16px 12px 28px;
+  background: var(--plate);
+  border-top: 1px solid var(--ink);
+}
+
+.pick-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pick-n {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  letter-spacing: 0.02em;
+}
+
+.pick-clear {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-family: var(--sans);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.pick-clear:hover { color: var(--ochre); }
+
+.pick-slots {
+  list-style: none;
+  margin: 7px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.pick-slot {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.pick-slot .slot-tag { cursor: pointer; }
+
+.slot-name {
+  font-size: 11px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pick-go {
+  display: block;
+  width: 100%;
+  margin-top: 9px;
+  padding: 7px 0;
+  font: inherit;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--plate);
+  background: var(--indigo);
+  border: 1px solid var(--indigo);
+  cursor: pointer;
+}
+
+.pick-go:hover { background: #16304f; }
+
+.pick-go:disabled {
+  color: var(--ink-3);
+  background: var(--paper-2);
+  border-color: var(--line-2);
+  cursor: not-allowed;
+}
+
+/* --- compare header --- */
+
+.cm-id .id-exp { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.cm-back { font-size: 10px; }
+
+.cm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px 20px;
+  margin-top: 14px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line-2);
+  border-bottom: 1px solid var(--line-2);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.lg-item { display: inline-flex; align-items: baseline; gap: 6px; }
+
+.lg-line {
+  display: inline-block;
+  width: 16px;
+  height: 0;
+  border-top: 2px solid currentColor;
+  align-self: center;
+}
+
+.lg-line.indigo { color: var(--indigo); }
+.lg-line.ochre  { color: var(--ochre); }
+.lg-line.dash   { border-top-style: dashed; }
+
+.lg-slot {
+  font-family: var(--mono);
+  font-size: 8.5px;
+  padding: 0 3px;
+  border: 1px solid currentColor;
+}
+
+.lg-slot.indigo { color: var(--indigo); }
+.lg-slot.ochre  { color: var(--ochre); }
+
+.lg-seed { font-family: var(--mono); font-size: 9.5px; color: var(--ink-3); }
+
+.lg-key { color: var(--ink-3); font-size: 10.5px; }
+
+.same-chip, .diff-chip, .best-chip, .miss-chip {
+  font-size: 9.5px;
+  padding: 0 4px;
+  border: 1px solid currentColor;
+}
+
+.same-chip { color: var(--ink-3); }
+.diff-chip { color: var(--ochre); }
+.best-chip { color: var(--indigo); border-bottom-width: 2px; }
+.miss-chip { color: var(--ink-3); border-style: dashed; }
+
+.cm-clean {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.cm-warn { margin-top: 14px; margin-bottom: 0; }
+.cm-warn code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ochre);
+}
+
+/* --- comparison table: rows are fields, columns are runs --- */
+
+.cm-act { margin-top: 44px; }
+
+.cm-wrap { overflow-x: auto; }
+
+table.cm-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+table.cm-table th,
+table.cm-table td {
+  padding: 6px 10px 6px 12px;
+  border-bottom: 1px solid var(--line-2);
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* 数值列不折行；文本列才允许换行，否则路径和 JSON 会把表撑爆 */
+table.cm-table td { white-space: nowrap; }
+table.cm-table td.cm-long, table.cm-table th.cm-long { white-space: normal; overflow-wrap: anywhere; }
+
+table.cm-table thead th {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--line);
+  white-space: normal;
+  min-width: 78px;
+}
+
+/* 文本类表格（参数、标签）列很宽：按容器收缩而不是横向滚动 */
+table.cm-table.cm-text { table-layout: fixed; }
+table.cm-table.cm-text th, table.cm-table.cm-text td { white-space: normal; overflow-wrap: anywhere; }
+
+table.cm-table thead th .slot-tag { margin-right: 5px; }
+
+.cm-col-name { white-space: normal; overflow-wrap: anywhere; }
+.cm-col-seed { font-family: var(--mono); font-size: 9px; color: var(--ink-3); }
+
+.cm-corner { text-align: left !important; padding-left: 0 !important; min-width: 132px; }
+
+table.cm-table tbody th {
+  text-align: left;
+  padding-left: 0;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: normal;
+}
+
+.cm-row-label { display: block; }
+
+.cm-row-key {
+  display: block;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 400;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+.cm-term {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 0;
+  width: 12px;
+  height: 12px;
+  line-height: 11px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  color: var(--ink-3);
+  background: none;
+  border: 1px solid var(--line-2);
+  border-radius: 50%;
+  cursor: help;
+  vertical-align: 1px;
+}
+
+.cm-term:hover,
+.cm-term[aria-expanded="true"] { color: var(--indigo); border-color: var(--indigo); }
+
+/* identical rows stay ink: ochre is what the eye should land on */
+table.cm-table tr.cm-same td { color: var(--ink-2); }
+
+td.cm-diff { color: var(--ochre); }
+
+td.cm-best {
+  color: var(--ink);
+  box-shadow: inset 0 -1px 0 var(--indigo);
+  font-weight: 500;
+}
+
+td.cm-best.cm-diff { color: var(--ochre); }
+
+.cm-miss { color: var(--ink-3); font-family: var(--sans); font-size: 10px; }
+
+.cm-yes { color: var(--ink-2); font-family: var(--sans); font-size: 10.5px; }
+
+table.cm-table tfoot th,
+table.cm-table tfoot td {
+  border-bottom: 0;
+  font-size: 10px;
+  color: var(--ink-3);
+  padding-top: 7px;
+}
+
+/* risk table: group + stat form a two-column stub */
+table.cm-risk tbody th:first-child {
+  padding-top: 10px;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+table.cm-risk .cm-stat {
+  text-align: left;
+  font-family: var(--sans);
+  font-weight: 400;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.cm-fold { margin: 14px 0 0; }
+
+.cm-fold > summary { padding: 7px 0; }
+
+.cm-yaml { margin: 0 0 18px; }
+
+/* --- YAML line diff --- */
+
+.yd-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  background: var(--paper-2);
+  border: 1px solid var(--line-2);
+  border-bottom: 0;
+  flex-wrap: wrap;
+}
+
+.yd-n { margin-left: auto; color: var(--ink-3); font-size: 10px; }
+
+.yd-wrap { border: 1px solid var(--line-2); max-height: 560px; overflow: auto; }
+
+pre.yd-doc {
+  margin: 0;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.62;
+  background: var(--plate);
+}
+
+/* 每一行才是 grid；容器只负责承载行，不能再套一层 grid 列 */
+.yd {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.yd-mark {
+  text-align: center;
+  color: var(--ink-3);
+  user-select: none;
+}
+
+.yd-a, .yd-b {
+  padding: 0 8px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  border-left: 1px solid var(--line-2);
+}
+
+.yd-del { background: rgba(156, 91, 36, 0.07); }
+.yd-ins { background: rgba(23, 96, 63, 0.06); }
+.yd-del .yd-mark { color: var(--ochre); }
+.yd-ins .yd-mark { color: var(--pos); }
+.yd-del .yd-a { color: var(--ochre); }
+.yd-ins .yd-b { color: var(--pos); }
+
+.yd .y-key     { color: var(--indigo); font-weight: 500; }
+.yd .y-colon   { color: var(--ink-3); }
+.yd .y-comment { color: var(--ink-3); }
+.yd .y-str     { color: var(--ochre); }
+.yd .y-num     { font-weight: 500; }
+.yd .y-anchor  { background: rgba(30,58,95,.06); }
+.yd .y-dash    { color: var(--ink-3); }
+
+/* overlay legend: a run with no series is dimmed, not dropped */
+.curve-key span.is-missing { color: var(--ink-3); opacity: .55; }
+
+.cm-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 1px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ink-3);
+}
+
+@media (max-width: 1080px) {
+  .pick-bar { margin-left: -26px; margin-right: -30px; }
+}
+
+@media (max-width: 820px) {
+  .pick-bar { margin: 12px 0 0; padding: 10px 0; position: static; }
+  .lg-key { margin-left: 0; }
+}

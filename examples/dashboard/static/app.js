@@ -451,8 +451,13 @@ const state = {
   detail: null,
   query: "",
   closed: new Set(),
+  selected: [],         // run ids ticked for comparison, in tick order
+  compare: null,        // last /api/compare payload
+  compareIds: [],       // the ids those results belong to
 };
 
+const MAX_COMPARE = 4;
+const SLOT_COLORS = ["indigo", "ochre"];   // A/B solid, C/D dashed in the same two
 const el = id => document.getElementById(id);
 
 async function boot() {
@@ -476,13 +481,109 @@ async function boot() {
   }
   const first = configs.find(c => c.has_renders) || configs[0];
   renderConfigs();
+  renderPickBar();
   await selectRun(first.newest_run_id, first.key);
 }
+
+el("pickgo").addEventListener("click", openCompare);
+el("pickclear").addEventListener("click", () => {
+  state.selected = [];
+  exitCompare();
+  el("specimen").hidden = !state.detail;
+  renderConfigs();
+  renderPickBar();
+  if (state.detail) renderOutline();
+});
 
 el("q").addEventListener("input", e => {
   state.query = e.target.value.trim().toLowerCase();
   renderConfigs();
 });
+
+/* ═══════════════════════════════════════════════════════════════════
+   Comparison selection.
+
+   The tick lives on the run row, but the row itself stays a plain button:
+   a checkbox cannot nest inside <button>, so each row becomes
+   `div.run-row > [input.pick-box] + button.run-entry`. Only the box
+   changes state; clicking the rest of the row opens that run alone, which
+   keeps "tick to compare" and "click to read" two different gestures.
+   ═══════════════════════════════════════════════════════════════════ */
+
+function slotOf(runId) {
+  const i = state.selected.indexOf(runId);
+  return i < 0 ? null : "ABCD"[i];
+}
+
+function togglePick(runId) {
+  const i = state.selected.indexOf(runId);
+  if (i >= 0) {
+    state.selected.splice(i, 1);
+  } else if (state.selected.length < MAX_COMPARE) {
+    state.selected.push(runId);
+  } else {
+    return;   // full: the bar already says so
+  }
+  // 少于 2 个就没有可对照的东西：必须真的退出对照页（清 DOM、恢复解剖页），
+  // 而不是只把 state.compare 置空——那样 Esc 和返回按钮都会失效。
+  if (state.selected.length < 2) exitCompare();
+  // 选择变了，已渲染的对照页不再对应当前选择；但不销毁它，
+  // 否则用户改选之后会看到一个空白的对照容器。
+  syncPickBoxes();
+  renderPickBar();
+}
+
+/* Update the ticks in place instead of re-rendering the index. Re-rendering
+   would destroy the very checkbox mid-click and the browser would revert it. */
+function syncPickBoxes() {
+  document.querySelectorAll(".pick-box").forEach(box => {
+    const picked = state.selected.includes(box.dataset.run);
+    box.checked = picked;
+    box.disabled = !picked && state.selected.length >= MAX_COMPARE;
+    box.title = picked ? "取消对比" : "勾选后参与对比";
+  });
+  document.querySelectorAll(".run-row").forEach(row => {
+    const id = row.dataset.run;
+    const tag = row.querySelector(".slot-tag");
+    if (!tag) return;
+    const slot = slotOf(id);
+    const i = state.selected.indexOf(id);
+    tag.textContent = slot || "";
+    tag.hidden = !slot;
+    tag.className = "slot-tag" + (slot
+      ? ` ${SLOT_COLORS[i % 2]}${i >= 2 ? " dash" : ""}` : "");
+  });
+}
+
+function findRun(runId) {
+  for (const c of state.configs) {
+    const hit = c.runs.find(r => r.run_id === runId);
+    if (hit) return { run: hit, config: c };
+  }
+  return null;
+}
+
+function renderPickBar() {
+  const bar = el("pickbar");
+  const n = state.selected.length;
+  bar.hidden = n === 0;
+  if (!n) return;
+
+  el("pickn").textContent = n >= MAX_COMPARE
+    ? `已选 ${n} / ${MAX_COMPARE} · 已满`
+    : `已选 ${n} / ${MAX_COMPARE}`;
+  el("pickslots").innerHTML = state.selected.map((id, i) => {
+    const hit = findRun(id);
+    const label = hit ? (hit.run.seed ? `种子 ${hit.run.seed}` : hit.config.label) : id.slice(0, 8);
+    return `<li class="pick-slot">
+      <button type="button" class="slot-tag ${SLOT_COLORS[i % 2]}${i >= 2 ? " dash" : ""}"
+        data-drop="${esc(id)}" title="取消勾选 ${esc(label)}">${"ABCD"[i]}</button>
+      <span class="slot-name" title="${esc(label)}">${esc(label)}</span>
+    </li>`;
+  }).join("");
+  el("pickgo").disabled = n < 2;
+  el("pickgo").textContent = n < 2 ? "再选 1 个" : `开始对照（${n}）`;
+}
 
 /* Left index: experiments → YAML → its runs.
    A YAML is the unit that gets edited, so it is the line you scan; its runs
@@ -571,10 +672,57 @@ function configEntry(c) {
     head.setAttribute("aria-expanded", String(!openNow));
   });
 
+  // 只跑过一次的配置没有展开的 run 行，勾选框就挂在配置行上——
+  // 否则这类配置（比如换了模型的那个）永远进不了对照。
+  if (c.run_count === 1) {
+    const only = c.runs[0];
+    const picked = state.selected.includes(only.run_id);
+    const slot = slotOf(only.run_id);
+    const slotIdx = state.selected.indexOf(only.run_id);
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "pick-box";
+    box.dataset.run = only.run_id;
+    box.checked = picked;
+    box.disabled = !picked && state.selected.length >= MAX_COMPARE;
+    box.title = picked ? "取消对比" : "勾选后参与对比";
+    box.setAttribute("aria-label", `勾选 ${c.label} 参与对比`);
+    box.addEventListener("change", () => togglePick(only.run_id));
+    const tag = document.createElement("span");
+    tag.className = "slot-tag cfg-slot" + (slot
+      ? ` ${SLOT_COLORS[slotIdx % 2]}${slotIdx >= 2 ? " dash" : ""}` : "");
+    tag.textContent = slot || "";
+    tag.hidden = !slot;
+    const row = document.createElement("div");
+    row.className = "run-row cfg-row";
+    row.dataset.run = only.run_id;
+    row.append(box, head, tag);
+    wrap.appendChild(row);
+  } else {
+    wrap.appendChild(head);
+  }
+
   const runs = document.createElement("ul");
   runs.className = "cfg-runs";
   for (const r of c.runs) {
     const li = document.createElement("li");
+    const row = document.createElement("div");
+    row.className = "run-row";
+    row.dataset.run = r.run_id;
+
+    const picked = state.selected.includes(r.run_id);
+    const slot = slotOf(r.run_id);
+    const slotIdx = state.selected.indexOf(r.run_id);
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "pick-box";
+    box.dataset.run = r.run_id;
+    box.checked = picked;
+    box.disabled = !picked && state.selected.length >= MAX_COMPARE;
+    box.title = picked ? "取消对比" : "勾选后参与对比";
+    box.setAttribute("aria-label", `勾选 ${r.name} 参与对比`);
+    box.addEventListener("change", () => togglePick(r.run_id));
+
     const b = document.createElement("button");
     b.type = "button";
     b.className = "run-entry";
@@ -594,18 +742,21 @@ function configEntry(c) {
         <span><i>年化</i>${pct(s.ann_cost)}</span>
         <span><i>IR</i>${num(s.ir_cost, 2)}</span>
         <span class="dot ${r.has_renders ? "on" : ""}" title="${r.has_renders ? "有图表" : "无图表"}"></span>
+        <span class="slot-tag${slot ? ` ${SLOT_COLORS[slotIdx % 2]}${slotIdx >= 2 ? " dash" : ""}` : ""}"${
+          slot ? "" : " hidden"}>${slot || ""}</span>
       </span>`;
     b.addEventListener("click", () => selectRun(r.run_id, c.key));
-    li.appendChild(b);
+    row.append(box, b);
+    li.appendChild(row);
     runs.appendChild(li);
   }
 
-  wrap.appendChild(head);
   if (c.run_count > 1) wrap.appendChild(runs);
   return wrap;
 }
 
 async function selectRun(runId, configKey) {
+  exitCompare();   // clicking a run row always means "read this one"
   state.current = null;
   state.currentConfig = configKey || (state.configs.find(c => c.runs.some(r => r.run_id === runId)) || {}).key || null;
   renderConfigs();
@@ -627,6 +778,326 @@ async function selectRun(runId, configKey) {
   renderSpecimen();
   renderOutline();
   window.scrollTo({ top: 0, behavior: "instant" });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Compare view: N runs, one row per field, colour only where they differ.
+   ═══════════════════════════════════════════════════════════════════ */
+
+function exitCompare() {
+  if (!state.compare) return;
+  state.compare = null;
+  state.compareIds = [];
+  el("comparison").hidden = true;
+  el("comparison").innerHTML = "";
+  el("specimen").hidden = !state.detail;
+  // 打开对照时解剖页的 DOM 被清掉了，回来必须重绘
+  if (state.detail) {
+    plateNo = 0;
+    renderSpecimen();
+    renderOutline();
+  }
+}
+
+async function openCompare() {
+  const ids = [...state.selected];
+  if (ids.length < 2) return;
+  el("specimen").hidden = true;
+  el("specimen").innerHTML = "";   // 两页同时留在 DOM 里会出现重复 id 和重复的 Plotly iframe
+  el("comparison").hidden = false;
+  el("loading").hidden = false;
+  el("loading").textContent = `读取 ${ids.length} 个 run 并对照…`;
+
+  let payload;
+  try {
+    const res = await fetch(`/api/compare?runs=${ids.map(encodeURIComponent).join(",")}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || res.status);
+    }
+    payload = await res.json();
+  } catch (e) {
+    el("loading").textContent = `对照失败：${e.message}`;
+    return;
+  }
+
+  el("loading").hidden = true;
+  state.compare = payload;
+  state.compareIds = ids;
+  plateNo = 0;
+  renderCompare();
+  window.scrollTo({ top: 0, behavior: "instant" });
+}
+
+/* Formatting follows the kind the backend marked; nothing is computed here. */
+function fmtCell(v, kind) {
+  if (v == null || v === "") return null;
+  switch (kind) {
+    case "pct":  return pct(v);
+    case "pct1": return pct(v, 1);
+    case "float": return num(v);
+    case "count": return typeof v === "number" ? v.toLocaleString("en-US") : String(v);
+    case "date": {
+      const d = new Date(v * 1000);
+      return Number.isNaN(d.valueOf()) ? String(v)
+        : `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, "0")}.${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    }
+    default: return String(v);
+  }
+}
+
+function compareHead(cmp) {
+  const legend = cmp.runs.map(r => {
+    const i = "ABCD".indexOf(r.slot);
+    return `<span class="lg-item">
+      <i class="lg-line ${SLOT_COLORS[i % 2]}${i >= 2 ? " dash" : ""}"></i>
+      <span class="lg-slot ${SLOT_COLORS[i % 2]}">${r.slot}</span>
+      <span class="lg-name">${esc(r.config || r.name)}</span>
+      ${r.seed ? `<span class="lg-seed">seed ${esc(r.seed)}</span>` : ""}
+    </span>`;
+  }).join("");
+
+  const warn = cmp.warnings.length
+    ? `<div class="flag cm-warn">
+        <b>这些 run 的指标不可直接比较：</b>
+        ${cmp.warnings.map(w => `${esc(w.label)} 分别为 ${w.values.map(v => `<code>${esc(v)}</code>`).join(" / ")}`).join("；")}。
+        测试段或股票池不同，IC、收益衡量的是不同的东西——数字仍然真实，但横向比较没有意义。
+      </div>`
+    : `<p class="cm-clean">测试段、股票池、基准、数据源一致，指标可以直接横向比较。</p>`;
+
+  return `<header class="act act-id cm-id">
+    <div class="id-label">
+      <span class="id-no">对照</span>
+      <span class="id-id">${cmp.runs.length} 个 run</span>
+      <span class="id-exp">${esc([...new Set(cmp.runs.map(r => r.experiment))].join(" / "))}
+        <button class="linkish cm-back" id="pickback" type="button">返回单 run 视图 · Esc</button>
+      </span>
+    </div>
+    <h2 class="id-title">${esc(cmp.verdict)}</h2>
+    <div class="cm-legend">${legend}
+      <span class="lg-item lg-key"><span class="same-chip">相同</span>不加标记</span>
+      <span class="lg-item lg-key"><span class="diff-chip">不同</span>赭色</span>
+      <span class="lg-item lg-key"><span class="best-chip">最优</span>靛蓝下划线</span>
+      <span class="lg-item lg-key"><span class="miss-chip">缺</span>该 run 没有此项</span>
+    </div>
+    ${warn}
+  </header>`;
+}
+
+/* One comparison table. Rows keep the order the backend sent (spec order);
+   a differing row is marked on the row, and only the differing cells get
+   the ochre — identical cells stay plain ink so the eye stops on the delta. */
+function cmTable(rows, cmp, opts) {
+  const o = opts || {};
+  const anyDiff = rows.some(r => !r.same && !r.always_diff);
+  const head = cmp.runs.map((r, i) => {
+    const slot = `<span class="slot-tag ${SLOT_COLORS[i % 2]}${i >= 2 ? " dash" : ""}">${r.slot}</span>`;
+    return `<th>${slot}<span class="cm-col-name">${esc(r.config || r.name)}${r.seed ? ` · <span class="cm-col-seed">seed ${esc(r.seed)}</span>` : ""}</span></th>`;
+  }).join("");
+
+  const body = rows.map(row => {
+    const cells = row.values.map((v, i) => {
+      const text = fmtCell(v, row.kind);
+      if (text == null) return `<td class="cm-miss">缺</td>`;
+      const isBest = row.best === i;
+      // 身份字段天然不同（run id、时间），不上赭色，否则真信号被淹没
+      const diff = !row.same && !row.always_diff;
+      return `<td class="${diff ? "cm-diff" : ""}${isBest ? " cm-best" : ""}">${esc(text)}</td>`;
+    }).join("");
+    const term = row.term
+      ? `<button class="has-term cm-term" type="button" data-term="${esc(row.term)}" aria-expanded="false"
+          aria-label="展开解释">?</button>`
+      : "";
+    const cls = row.same || row.always_diff ? "cm-same" : "cm-differ";
+    return `<tr class="${cls}">
+      <th><span class="cm-row-label">${esc(row.label || row.key)}</span>
+        ${o.showKey && row.key !== row.label ? `<code class="cm-row-key">${esc(row.key)}</code>` : ""}
+        ${term}</th>${cells}</tr>`;
+  }).join("");
+
+  const foot = anyDiff
+    ? `<tfoot><tr><th>不同</th>${cmp.runs.map(() => `<td>${rows.filter(r => !r.same && !r.always_diff).length}</td>`).join("")}</tr></tfoot>`
+    : "";
+
+  // 值全是自由文本时用固定布局，避免长路径/JSON 把表撑出容器
+  const texty = rows.every(r => r.kind === "text" || r.kind === "count");
+  return `<div class="cm-wrap"><table class="cm-table${texty ? " cm-text" : ""}">
+    <thead><tr><th class="cm-corner">字段</th>${head}</tr></thead>
+    <tbody>${body}</tbody>${foot}</table></div>`;
+}
+
+function cmSection(no, key, title, lede, body) {
+  return `<section class="act cm-act" data-act="${key}" id="act-${key}">
+    <h2 class="act-head"><span class="act-no">${no}</span>${esc(title)}</h2>
+    ${lede ? `<p class="act-lede">${esc(lede)}</p>` : ""}
+    ${body}
+  </section>`;
+}
+
+/* Overlay chart: one slot-coloured line per run, shared y axis. */
+function lineMany(series, opts) {
+  const o = opts || {};
+  const usable = series.filter(s => (s.values || []).some(v => Number.isFinite(v)));
+  if (!usable.length) return `<p class="plate-empty">没有可画的数据</p>`;
+
+  const all = usable.flatMap(s => s.values.filter(v => Number.isFinite(v)));
+  let lo = Math.min(...all), hi = Math.max(...all);
+  if (o.baseline != null) { lo = Math.min(lo, o.baseline); hi = Math.max(hi, o.baseline); }
+  if (hi === lo) { hi = lo + 1e-12; lo -= 1e-12; }
+
+  const padX = 4, padY = 8;
+  const w = W - padX * 2, h = H - padY * 2;
+  const n = Math.max(...series.map(s => (s.values || []).length)) || 1;
+  const X = i => padX + (n <= 1 ? 0 : (i / (n - 1)) * w);
+  const Y = v => padY + h - ((v - lo) / (hi - lo)) * h;
+
+  const paths = series.map((s, si) => {
+    if (!s.values) return "";
+    const i = "ABCD".indexOf(s.slot);
+    const color = `var(--${SLOT_COLORS[i % 2]})`;
+    const dash = i >= 2 ? ` stroke-dasharray="5 3"` : "";
+    const d = s.values.map((v, k) => [k, v])
+      .filter(p => Number.isFinite(p[1]))
+      .map((p, kk) => `${kk ? "L" : "M"}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`)
+      .join(" ");
+    const hits = s.values.map((v, k) => Number.isFinite(v)
+      ? `<circle cx="${X(k).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="5" fill="transparent" class="cm-hit"
+          data-slot="${si}" data-i="${k}"><title>${esc(s.slot)} ${num(v, 6)}</title></circle>`
+      : "").join("");
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.5"${dash} vector-effect="non-scaling-stroke"/>${hits}`;
+  }).join("");
+
+  const zero = o.baseline == null ? ""
+    : `<line x1="${padX}" x2="${padX + w}" y1="${Y(o.baseline).toFixed(1)}" y2="${Y(o.baseline).toFixed(1)}" class="zero"/>`;
+
+  const labels = o.labels || null;
+  const dates = labels && labels.length
+    ? `<div class="cm-axis"><span>${esc(labels[0])}</span><span>${esc(labels[labels.length - 1])}</span></div>`
+    : "";
+
+  return `<div class="line"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+      ${zero}${paths}
+    </svg>
+    <div class="line-scale"><span>${num(lo, 5)}</span><span>${num(hi, 5)}</span></div>
+    ${dates}</div>`;
+}
+
+function renderCompare() {
+  const cmp = state.compare;
+  const secs = Object.fromEntries(cmp.sections.map(s => [s.key, s]));
+  cmChartCache = {};
+
+  const diffRows = cmp.param_diff;
+  const diffBody = diffRows.length
+    ? `<p class="act-lede">只列出不同的参数。相同的 ${cmp.param_same.length} 项收起在下面——
+      如果清单只有一两行，那这次差异就来自这一两行。</p>
+      ${cmTable(diffRows, cmp, { showKey: true })}
+      <details class="fold cm-fold"><summary>相同的参数（${cmp.param_same.length}）</summary>
+        ${cmTable(cmp.param_same, cmp, { showKey: true })}
+      </details>`
+    : `<p class="repeat-single">所有 run 的参数完全相同。结果上的任何差异都不是配置改动带来的——
+      它来自训练随机性、运行时间或数据窗口的细微不同。</p>`;
+
+  const yamlDiff = cmp.yaml ? `<details class="fold cm-fold cm-yaml">
+      <summary>配置原文并列（${esc(cmp.yaml.a.path)}）</summary>
+      ${yamlPair(cmp.yaml.a, cmp.yaml.b)}
+    </details>` : "";
+
+  const risk = cmp.risk.length ? (() => {
+    const groups = [...new Set(cmp.risk.map(r => r.group))];
+    const stats = [...new Set(cmp.risk.map(r => r.stat))];
+    const GL = { mean: "日均超额", std: "标准差", annualized_return: "年化超额",
+      information_ratio: "IR", max_drawdown: "最大回撤" };
+    const cellOf = (g, s) => cmp.risk.find(r => r.group === g && r.stat === s);
+    const head = cmp.runs.map((r, i) =>
+      `<th><span class="slot-tag ${SLOT_COLORS[i % 2]}${i >= 2 ? " dash" : ""}">${r.slot}</span></th>`).join("");
+    const body = groups.map(g => {
+      const cells = [...new Set(cmp.risk.filter(r => r.group === g).map(r => r.stat))];
+      return cells.map((s, si) => {
+        const lookup = cellOf(g, s);
+        const vals = lookup ? lookup.values : [];
+        return `<tr><th>${si === 0 ? esc(g === "excess_return_with_cost" ? "含成本" : "无成本") : ""}</th>
+          <th class="cm-stat">${esc(GL[s] || s)}</th>
+          ${vals.map((v, i) => `<td class="${lookup && !lookup.same ? "cm-diff" : ""}${
+            lookup && lookup.best === i ? " cm-best" : ""}">${v == null ? '<span class="cm-miss">缺</span>' : esc(num(v))}</td>`).join("")}
+        </tr>`;
+      }).join("");
+    }).join("");
+    return `<div class="cm-wrap"><table class="cm-table cm-risk">
+      <thead><tr><th class="cm-corner">口径</th><th class="cm-stat">统计量</th>${head}</tr></thead>
+      <tbody>${body}</tbody></table></div>`;
+  })() : `<p class="repeat-single">这些 run 没有风险拆解表（缺 port_analysis_1day.pkl）。</p>`;
+
+  const tagRows = cmp.tags;
+  const tagBody = tagRows.length
+    ? cmTable(tagRows.map(t => ({ ...t, label: t.key, kind: "text", best: null, term: null })), cmp, { showKey: false })
+    : `<p class="repeat-single">没有可对比的标签。</p>`;
+
+  const artBody = cmp.artifacts.length
+    ? `<div class="cm-wrap"><table class="cm-table cm-art">
+        <thead><tr><th class="cm-corner">产物</th>${cmp.runs.map((r, i) =>
+          `<th><span class="slot-tag ${SLOT_COLORS[i % 2]}${i >= 2 ? " dash" : ""}">${r.slot}</span></th>`).join("")}</tr></thead>
+        <tbody>${cmp.artifacts.map(a => `<tr><th><code class="cm-row-key">${esc(a.path)}</code></th>
+          ${a.present.map(p => `<td>${p ? '<span class="cm-yes">有</span>' : '<span class="cm-miss">缺</span>'}</td>`).join("")}</tr>`).join("")}
+        </tbody></table></div>`
+    : `<p class="repeat-single">产物的文件构成完全一致——没有哪个 run 多出或少掉文件。</p>`;
+
+  el("comparison").innerHTML = [
+    compareHead(cmp),
+    cmSection("一", "setting", "实验设置", "喂进去的东西。这里不同，后面的指标就不可比。",
+      cmTable(secs.setting.rows, cmp)),
+    cmSection("二", "params", "配置差异", "改了哪些参数。只有这一节不同、指标也变，才算配置的作用。",
+      yamlDiff + diffBody),
+    cmSection("三", "signal", "信号：预测得准不准", "同一段测试期、同一批股票上，谁的打分更贴近真实涨跌。",
+      cmTable(secs.signal.rows, cmp) + chartsFor(cmp, ["ic", "rank_ic"])),
+    cmSection("四", "execution", "执行：下单到成交", "换手低、成本低，是持续赚钱的前提。",
+      cmTable(secs.execution.rows, cmp) + chartsFor(cmp, ["turnover", "cost"])),
+    cmSection("五", "outcome", "结果：赚没赚到，稳不稳", "账本。含成本年化、IR、回撤三项一起读。",
+      cmTable(secs.outcome.rows, cmp) + risk + chartsFor(cmp, ["excess"])),
+    cmSection("六", "training", "训练：有没有学过头", "验证损失回升就是过拟合的信号。",
+      cmTable(secs.training.rows, cmp) + chartsFor(cmp, ["l2_valid"])),
+    cmSection("七", "record", "原始记录", "标签与产物的差异——谁的图表生成了、谁没有。",
+      `<div class="sub-head"><h3>标签</h3></div>${tagBody}
+       <div class="sub-head"><h3>产物差异</h3><p>${cmp.artifacts.length
+         ? "只在部分 run 里存在的文件。渲染图表不在对照页里挂载，点单 run 查看。"
+         : "各 run 的产物目录逐文件比对后的结果。"}</p></div>${artBody}`),
+  ].join("");
+
+  // 图版编号必须按文档顺序递增，所以图在这里按调用顺序惰性生成
+  renderOutline();
+}
+
+/* Overlay plates are emitted lazily in document order so plateNo stays
+   sequential: section three asks for ic/rank_ic, then execution, etc. */
+let cmChartCache = {};
+function chartsFor(cmp, ids) {
+  return ids.map(id => {
+    if (!(id in cmChartCache)) cmChartCache[id] = cmChartPlate(cmp, id);
+    return cmChartCache[id];
+  }).join("");
+}
+
+function cmChartPlate(cmp, id) {
+  const c = cmp.charts.find(x => x.id === id);
+  if (!c) return "";
+  const legend = cmp.runs.map((r, i) => {
+    const has = c.series[i] && c.series[i].values;
+    return `<span class="${has ? "" : "is-missing"}"><i class="lg-line ${SLOT_COLORS[i % 2]}${i >= 2 ? " dash" : ""}"></i>${r.slot} ${esc(r.config || r.name)}</span>`;
+  }).join("");
+  const missingRuns = cmp.runs.filter((r, i) => !c.series[i] || !c.series[i].values);
+  const missing = missingRuns.length
+    ? " · " + missingRuns.map(r => `${r.slot} ${esc(r.config || r.name)} 没有这条数据`).join("，")
+    : "";
+  return plate({
+    id: `cm-${c.id}`,
+    title: c.title,
+    note: c.note + missing,
+    meta: c.series.some(s => s.values) ? null : "无数据",
+    body: `<div class="curve-key">${legend}</div>` +
+      lineMany(c.series.map((s, i) => ({ ...s, slot: "ABCD"[i] })),
+               { baseline: ["ic", "rank_ic", "excess"].includes(c.id) ? 0 : null,
+                 labels: c.labels }),
+  });
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1244,10 +1715,53 @@ function actProvenance(run, x) {
   </section>`;
 }
 
+/* Line-by-line YAML diff for the two-run case. Uses a plain LCS so the
+   result is a real alignment (both sides keep their line numbers) rather
+   than a naive "which lines moved" guess. */
+function yamlPair(a, b) {
+  const al = a.text.split("\n"), bl = b.text.split("\n");
+  const N = al.length, M = bl.length;
+  // cap the table: 130-line configs are fine, pathological files fall back
+  if (N * M > 400000) {
+    return `<pre class="yaml">${yamlHTML(a.text)}</pre><pre class="yaml">${yamlHTML(b.text)}</pre>`;
+  }
+  const dp = Array.from({ length: N + 1 }, () => new Uint16Array(M + 1));
+  for (let i = N - 1; i >= 0; i--) {
+    for (let j = M - 1; j >= 0; j--) {
+      dp[i][j] = al[i] === bl[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const rows = [];
+  let i = 0, j = 0;
+  while (i < N && j < M) {
+    if (al[i] === bl[j]) { rows.push(["same", al[i], al[i]]); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { rows.push(["del", al[i], null]); i++; }
+    else { rows.push(["ins", null, bl[j]]); j++; }
+  }
+  while (i < N) rows.push(["del", al[i++], null]);
+  while (j < M) rows.push(["ins", null, bl[j++]]);
+
+  const body = rows.map(([kind, left, right]) => {
+    const mark = kind === "same" ? " " : kind === "del" ? "−" : "+";
+    return `<div class="yd yd-${kind}">
+      <span class="yd-mark">${mark}</span>
+      <span class="yd-a">${left == null ? "" : yamlHTML(left)}</span>
+      <span class="yd-b">${right == null ? "" : yamlHTML(right)}</span>
+    </div>`;
+  }).join("");
+
+  const changed = rows.filter(r => r[0] !== "same").length;
+  return `<div class="yd-head">
+      <span class="slot-tag indigo">A</span>${esc(a.path)}
+      <span class="slot-tag ochre">B</span>${esc(b.path)}
+      <span class="yd-n">${changed} 行不同 · 相同 ${N - rows.filter(r => r[0] === "del").length} 行</span>
+    </div>
+    <div class="yd-wrap"><pre class="yd-doc">${body}</pre></div>`;
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    6. qlib Plotly renders — into the SAME plate component.
    ═══════════════════════════════════════════════════════════════════ */
-
 const RENDER_GROUPS = [
   { stem: "report", title: "净值与回撤", note: "qlib 官方回测报告：累计净值、回撤区间和持仓概况。" },
   { stem: "score_ic", title: "IC 累积", note: "逐日 IC 的累计值，走向越直、越向上越好。" },
@@ -1345,17 +1859,25 @@ function observePlots() {
 
 const ACT_LABEL = {
   id: "身份", repeat: "同配置运行", setting: "实验设置", config: "配置原文",
+  params: "配置差异",
   signal: "信号", execution: "执行",
   outcome: "结果", training: "训练", figures: "官方图表",
   record: "原始记录", provenance: "出处",
 };
 
 function renderOutline() {
-  const acts = [...document.querySelectorAll(".act")].map(a => a.dataset.act);
+  // 只列当前可见容器的章节：解剖页隐藏时它的章节不该出现在目录里。
+  // 两个容器不能同时持有同一个 id，否则 getElementById 会命中隐藏的那个。
+  const scope = state.compare ? el("comparison") : el("specimen");
+  const other = state.compare ? el("specimen") : el("comparison");
+  other.querySelectorAll(".act[id]").forEach(a => a.removeAttribute("id"));
+  const acts = [...scope.querySelectorAll(".act")]
+    .map(a => a.dataset.act)
+    .filter(Boolean);
   el("outline").innerHTML = acts.map(a =>
     `<li><a href="#act-${a}" data-target="${a}">${esc(ACT_LABEL[a] || a)}</a></li>`
   ).join("");
-  document.querySelectorAll(".act").forEach(a => { a.id = `act-${a.dataset.act}`; });
+  scope.querySelectorAll(".act").forEach(a => { if (a.dataset.act) a.id = `act-${a.dataset.act}`; });
   el("outline").querySelectorAll("a").forEach(a => {
     a.addEventListener("click", e => {
       e.preventDefault();
@@ -1367,6 +1889,15 @@ function renderOutline() {
 
 /* Term buttons: one open sheet at a time, anchored under the button. */
 document.addEventListener("click", e => {
+  const back = e.target.closest("#pickback");
+  if (back) {
+    exitCompare();
+    renderConfigs();
+    renderPickBar();   // 由选择状态决定显隐，不能硬写成可见
+    return;
+  }
+  const drop = e.target.closest(".pick-slot [data-drop]");
+  if (drop) { togglePick(drop.dataset.drop); return; }
   const sw = e.target.closest(".repeat .linkish");
   if (sw) {
     selectRun(sw.dataset.run, state.currentConfig);
@@ -1405,6 +1936,12 @@ document.addEventListener("click", e => {
 });
 
 document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && state.compare) {
+    // 对照页里按 Esc 退回单 run 视图，勾选保留
+    const back = document.getElementById("pickback");
+    if (back) back.click();
+    return;
+  }
   if (e.key !== "Escape") return;
   document.querySelectorAll(".term-host").forEach(h => {
     if (h._btn) h._btn.setAttribute("aria-expanded", "false");

@@ -22,12 +22,22 @@
 
     <nav class="index-runs" id="runs" aria-label="实验与 run"></nav>
 
+    <div class="pick-bar" id="pickbar" hidden>
+      <div class="pick-head">
+        <span class="pick-n" id="pickn">已选 0 / 4</span>
+        <button class="pick-clear" id="pickclear" type="button">清空</button>
+      </div>
+      <ol class="pick-slots" id="pickslots"></ol>
+      <button class="pick-go" id="pickgo" type="button" disabled>开始对照</button>
+    </div>
+
     <ol class="index-outline" id="outline" aria-label="本页结构"></ol>
   </aside>
 
   <main class="sheet">
     <p class="loading" id="loading">正在读取 mlruns…</p>
     <article class="specimen" id="specimen" hidden></article>
+    <article class="comparison" id="comparison" hidden></article>
   </main>
 
 </div>

@@ -257,19 +257,13 @@ def _downsample(values: list, n: int = MAX_SERIES_POINTS) -> list:
     return [values[min(int(i * step), len(values) - 1)] for i in range(n)]
 
 
-def _series_from_pickle(exp_id: str, run_id: str, rel: str, column: Optional[str] = None) -> Optional[dict]:
-    """A daily series as {dates, values, stats}.
+def _series_from_obj(obj) -> Optional[dict]:
+    """A pandas Series as {dates, values, stats}.
 
     ``values`` is downsampled for the sparkline, but ``stats`` is computed on
     the full series so the summary numbers match the pickle exactly.
     """
-    path = _art_dir(exp_id, run_id) / rel
-    if not path.is_file():
-        return None
     try:
-        obj = _load_pickle(path)
-        if column is not None:
-            obj = obj[column]
         dates = [str(d)[:10] for d in obj.index]
 
         out_vals = []
@@ -309,6 +303,50 @@ def _series_from_pickle(exp_id: str, run_id: str, rel: str, column: Optional[str
         return {"dates": dates, "values": out_vals, "total": len(obj), "stats": stats}
     except Exception:
         return None
+
+
+def _series_from_pickle(exp_id: str, run_id: str, rel: str, column: Optional[str] = None) -> Optional[dict]:
+    path = _art_dir(exp_id, run_id) / rel
+    if not path.is_file():
+        return None
+    try:
+        obj = _load_pickle(path)
+        if column is not None:
+            obj = obj[column]
+        return _series_from_obj(obj)
+    except Exception:
+        return None
+
+
+def _excess_series(exp_id: str, run_id: str) -> dict:
+    """Cumulative excess return, with and without cost.
+
+    qlib computes the daily excess exactly as ``return - bench`` and
+    ``return - bench - cost`` (qlib/workflow/record_temp.py), so this follows
+    the same convention. The cumulative sum is done on the *full* series and
+    only then downsampled — the comparison view must not reshape the curve.
+    """
+    path = _art_dir(exp_id, run_id) / "portfolio_analysis" / "report_normal_1day.pkl"
+    out = {"without_cost": None, "with_cost": None}
+    if not path.is_file():
+        return out
+    try:
+        df = _load_pickle(path)
+        ret = df["return"]
+        bench = df["bench"]
+    except Exception:
+        return out
+
+    # 两列各自取，缺 cost 列时无成本那条仍然画得出来
+    try:
+        out["without_cost"] = _series_from_obj((ret - bench).cumsum())
+    except Exception:
+        out["without_cost"] = None
+    try:
+        out["with_cost"] = _series_from_obj((ret - bench - df["cost"]).cumsum())
+    except Exception:
+        out["with_cost"] = None
+    return out
 
 
 def _training_curve(run_id: str) -> Optional[dict]:
@@ -546,6 +584,7 @@ def _extras(exp_id: str, run_id: str, params: dict) -> dict:
         "bench_series": _series_from_pickle(
             exp_id, run_id, "portfolio_analysis/report_normal_1day.pkl", "bench"
         ),
+        "excess_series": _excess_series(exp_id, run_id),
         "risk_table": _risk_table(exp_id, run_id),
         "dataset_inputs": _dataset_inputs(exp_id, run_id),
         "config_summary": _config_summary(exp_id, run_id),

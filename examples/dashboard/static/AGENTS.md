@@ -59,14 +59,22 @@ static/
 ### 交互
 
 - 左栏索引：**以 YAML 为维度**。实验 → 配置 → 该配置的多次运行。配置是一行，显示 IC、运行次数、多次运行时的 IC 极差；只有一个 run 时点配置行直接选中，多个 run 时展开后逐个切换
+- **勾选对比**：每个 run 行左侧有方块勾选框（只跑一次的配置，勾选框挂在配置行上），勾中的显示槽位徽标 A/B/C/D，左下角粘性对比条可「开始对照 / 清空」。上限 4 个
+- **对照页**：右侧整页换成「行是字段、列是 run」的八节表格。赭色 = 该值不同，靛蓝下划线 = 该行最优，虚线框「缺」= 该 run 没有此项。点 run 行、按 Esc 或「返回单 run 视图」均可退出，勾选保留
 - 页面顶部有「同配置运行」区：列出该 YAML 的所有 run 与极差，并判断当前 run 是否偏离正常范围
-- 左栏底部是页面目录，点击平滑跳转
+- 左栏底部是页面目录，点击平滑跳转（目录只列当前可见那一页的章节）
 - 术语卡一次只开一张，点击外部或按 Esc 关闭
 - 图表 iframe 加载后测量 Plotly 内容高度再撑开，避免裁图
 
 ## 代码约定
 
-**状态集中在一个 `state` 对象**：`configs` / `current` / `currentConfig` / `detail` / `query` / `closed`。改状态后显式调对应的 `render*()`，不做响应式绑定。
+**状态集中在一个 `state` 对象**：`configs` / `current` / `currentConfig` / `detail` / `query` / `closed` / `selected` / `compare` / `compareIds`。改状态后显式调对应的 `render*()`，不做响应式绑定。
+
+**勾选状态就地更新，不重绘索引。** `syncPickBoxes` 改已有 checkbox 的 `checked` / `disabled` 和槽位徽标。若改成 `renderConfigs()`，被点击的那个 checkbox 会在 `change` 事件中途被销毁，浏览器随即把它回退成未勾选，并触发第二次 `change`——实测过，会「点一下勾上又自己取消」。
+
+**两个容器不能同时持有同一个 `id`。** 解剖页和对照页都在 DOM 里，`renderOutline` 只给当前可见容器设 `act-*` id，并清掉另一个的，否则 `getElementById` 会命中隐藏的那个（实测过 `scrollIntoView` 定位到不可见章节）。
+
+**对照页不做任何计算。** 差异、最优、缺失都由 `/api/compare` 标好（`same` / `best` / `always_diff`），这里只格式化。`fmtCell` 按后端给的 `kind` 选格式。
 
 **索引以配置（YAML）为维度，不是 run。** 训练、验证、修改的对象都是 YAML，同一个 YAML 常常跑多次（`--repeat` 换 seed）。按 run 平铺会把这些重复运行混在一起，看不出「这次的不同是改了配置还是换了种子」。`/api/configs` 在后端就完成分组，前端只负责展示。
 
