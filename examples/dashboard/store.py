@@ -417,6 +417,453 @@ def _text_artifact(exp_id: str, run_id: str, name: str, limit: int = 20000) -> O
         return None
 
 
+# ── 撮合过程序列 ──────────────────────────────────────────────────────────
+# indicators_normal_1day.pkl 是 871×6 的 DataFrame（ffr/pa/pos/deal_amount/
+# value/count）。此前只取了 ffr/pa/pos 三个聚合数，逐日的成交金额和笔数
+# 一直没有暴露出来——而它们才是「执行质量」的过程证据。
+
+
+def _indicators_frame(exp_id: str, run_id: str) -> Optional[dict]:
+    path = _art_dir(exp_id, run_id) / "portfolio_analysis" / "indicators_normal_1day.pkl"
+    if not path.is_file():
+        return None
+    try:
+        df = _load_pickle(path)
+    except Exception:
+        return None
+    out = {}
+    for col in ("deal_amount", "value", "count", "ffr"):
+        if col not in df.columns:
+            continue
+        try:
+            out[col] = _series_from_obj(df[col])
+        except Exception:
+            continue
+    return out or None
+
+
+# ── 模型身份与超参 ────────────────────────────────────────────────────────
+# 前端此前硬编码了 LightGBM 的 7 个键，跑 DoubleEnsemble 时真正定义模型的
+# 参数（num_models/epochs/enable_sr/...）一个都显示不出来。改成按
+# model.class 从 params 里动态取该模型类型的键，新模型加进白名单即可。
+
+MODEL_HYPER_KEYS = {
+    "LGBModel": [
+        "loss", "learning_rate", "num_leaves", "max_depth", "colsample_bytree",
+        "subsample", "lambda_l1", "lambda_l2", "num_threads", "seed",
+    ],
+    "DEnsembleModel": [
+        "base_model", "loss", "num_models", "epochs", "enable_sr", "enable_fs",
+        "alpha1", "alpha2", "bins_sr", "bins_fs", "decay", "sample_ratios",
+        "sub_weights", "learning_rate", "num_leaves", "max_depth",
+        "colsample_bytree", "subsample", "lambda_l1", "lambda_l2",
+        "num_threads", "seed", "verbosity",
+    ],
+    "LinearModel": ["estimator"],
+    "XGBModel": [
+        "learning_rate", "max_depth", "n_estimators", "subsample",
+        "colsample_bytree", "reg_alpha", "reg_lambda", "seed",
+    ],
+    "CatBoostModel": [
+        "loss_function", "learning_rate", "depth", "iterations", "l2_leaf_reg", "random_seed",
+    ],
+}
+
+
+def _model_info(params: dict) -> Optional[dict]:
+    """模型类别 + 该类别下实际记录的超参。"""
+    cls = params.get("model.class")
+    if not cls:
+        return None
+    prefix = "model.kwargs."
+    hyper = {}
+    keys = MODEL_HYPER_KEYS.get(cls)
+    if keys:
+        for k in keys:
+            v = params.get(prefix + k)
+            if v is not None:
+                hyper[k] = v
+    else:
+        # 未知模型：把所有 model.kwargs.* 原样给出，至少不丢信息
+        for k, v in params.items():
+            if k.startswith(prefix):
+                hyper[k[len(prefix):]] = v
+    return {
+        "class": cls,
+        "module_path": params.get("model.module_path"),
+        "hyper": hyper,
+        "known": keys is not None,
+    }
+
+
+# ── 完整配置树 ────────────────────────────────────────────────────────────
+# config_summary 只留了 5 个顶层键。这里给出解析后的完整配置（含 task 树），
+# 让「YAML 里的锚点 *market 到底解析成了什么」也能查到。
+
+CONFIG_FULL_MAX_DEPTH = 8
+CONFIG_FULL_MAX_ITEMS = 200
+
+
+def _trim(v, depth: int = 0):
+    if depth > CONFIG_FULL_MAX_DEPTH:
+        return "…"
+    if isinstance(v, dict):
+        items = list(v.items())[:CONFIG_FULL_MAX_ITEMS]
+        out = {str(k): _trim(x, depth + 1) for k, x in items}
+        if len(v) > len(items):
+            out["…"] = f"（还有 {len(v) - len(items)} 项）"
+        return out
+    if isinstance(v, (list, tuple)):
+        vals = list(v)[:CONFIG_FULL_MAX_ITEMS]
+        out = [_trim(x, depth + 1) for x in vals]
+        if len(v) > len(vals):
+            out.append(f"…（还有 {len(v) - len(vals)} 项）")
+        return out
+    return _jsonable(v, depth)
+
+
+def _config_full(exp_id: str, run_id: str) -> Optional[dict]:
+    path = _art_dir(exp_id, run_id) / "config"
+    if not path.is_file():
+        return None
+    try:
+        cfg = _load_pickle(path)
+        if not isinstance(cfg, dict):
+            return None
+        return _trim(cfg)
+    except Exception:
+        return None
+
+
+# ── 预测分数与持仓明细 ────────────────────────────────────────────────────
+# 这是自建看板相对 MLflow 界面的核心增量：每次训练产出的 26 万条逐日分数、
+# 871 天的实际持仓，MLflow 只显示聚合后的 IC，看不到「今天选了什么、买了
+# 什么」。pred.pkl 3MB / positions 3MB，按日期切片后单次只有几百行，
+# 所以用进程内 LRU 缓存，避免每次请求都反序列化。
+
+from collections import OrderedDict as _OrderedDict
+
+_PRED_CACHE: "_OrderedDict[tuple, object]" = _OrderedDict()
+_POS_CACHE: "_OrderedDict[tuple, object]" = _OrderedDict()
+_LABEL_CACHE: "_OrderedDict[tuple, object]" = _OrderedDict()
+_CACHE_MAX = 4  # 最多缓存几个 run 的数据（每个约 3–30MB）
+
+
+def _cached(cache: _OrderedDict, key: tuple, loader):
+    if key in cache:
+        cache.move_to_end(key)
+        return cache[key]
+    obj = loader()
+    if obj is not None:
+        cache[key] = obj
+        while len(cache) > _CACHE_MAX:
+            cache.popitem(last=False)
+    return obj
+
+
+def _load_pred(exp_id: str, run_id: str):
+    def loader():
+        p = _art_dir(exp_id, run_id) / "pred.pkl"
+        return _load_pickle(p) if p.is_file() else None
+    return _cached(_PRED_CACHE, (exp_id, run_id), loader)
+
+
+def _load_label(exp_id: str, run_id: str):
+    def loader():
+        p = _art_dir(exp_id, run_id) / "label.pkl"
+        return _load_pickle(p) if p.is_file() else None
+    return _cached(_LABEL_CACHE, (exp_id, run_id), loader)
+
+
+def _load_positions(exp_id: str, run_id: str):
+    def loader():
+        p = _art_dir(exp_id, run_id) / "portfolio_analysis" / "positions_normal_1day.pkl"
+        return _load_pickle(p) if p.is_file() else None
+    return _cached(_POS_CACHE, (exp_id, run_id), loader)
+
+
+def pred_dates(exp_id: str, run_id: str) -> list[str]:
+    pred = _load_pred(exp_id, run_id)
+    if pred is None:
+        return []
+    try:
+        return [str(d)[:10] for d in pred.index.get_level_values(0).unique()]
+    except Exception:
+        return []
+
+
+def _score_frame(exp_id: str, run_id: str, date: Optional[str]):
+    """pred.pkl 的单日切片，返回 ``(scores, days, day)``。
+
+    默认取**倒数第二个**交易日：最后一天的分数还没有对应的执行日，
+    没法标「持有 / 未持有」，而前一日的分数可以完整对照次日持仓。
+    """
+    pred = _load_pred(exp_id, run_id)
+    if pred is None:
+        return None
+    try:
+        days = [str(d)[:10] for d in pred.index.get_level_values(0).unique()]
+    except Exception:
+        return None
+    if not days:
+        return None
+    if date in days:
+        day = date
+    elif len(days) >= 2:
+        day = days[-2]
+    else:
+        day = days[-1]
+    try:
+        df = pred.xs(day, level=0)
+    except Exception:
+        return None
+    col = "score" if "score" in df.columns else df.columns[0]
+    return df[col], days, day
+
+
+def predictions(exp_id: str, run_id: str, date: Optional[str] = None, top: Optional[int] = None) -> Optional[dict]:
+    """某一天的逐股预测分数。
+
+    top=None 返回全部；top=N 只返回分数最高的 N 只。排名按当日分数降序。
+
+    同时给出「这些分数被用于哪个交易日的持仓」（``exec_date``）以及该日
+    实际持有集合（``held``）。两者相差一个交易日，因为
+    TopkDropoutStrategy 在 T 日交易时用 T-1 日信号（signal_strategy.py:141
+    的 ``shift=1``）。前端据此给每行打「持有 / 未持有」标签，避免拿错日子。
+    """
+    got = _score_frame(exp_id, run_id, date)
+    if got is None:
+        return None
+    scores, days, day = got
+    s = scores.sort_values(ascending=False)
+    total = len(s)
+    if top is not None and top > 0:
+        s = s.head(top)
+
+    rows = []
+    for i, (inst, val) in enumerate(s.items(), start=1):
+        f = None
+        try:
+            fv = float(val)
+            f = None if fv != fv else fv
+        except (TypeError, ValueError):
+            pass
+        rows.append({"rank": i, "instrument": str(inst), "score": f})
+
+    full = scores.astype(float)
+    finite = full[full.notna()]
+    stats = None
+    if len(finite):
+        ordered = sorted(finite.tolist())
+        n = len(ordered)
+
+        def q(p: float) -> float:
+            return ordered[min(n - 1, int(p * n))]
+
+        stats = {
+            "n": int(len(finite)),
+            "mean": sum(ordered) / n,
+            "min": ordered[0],
+            "p05": q(0.05),
+            "median": q(0.50),
+            "p95": q(0.95),
+            "max": ordered[-1],
+            "pos_ratio": len([v for v in ordered if v > 0]) / n,
+        }
+
+    # 这批分数被拿去交易的那一天，以及那天收盘后的真实持仓
+    idx = days.index(day)
+    exec_date = days[idx + 1] if idx + 1 < len(days) else None
+    held = None
+    if exec_date is not None:
+        pos = positions(exp_id, run_id, exec_date)
+        if pos is not None:
+            held = {h["instrument"] for h in pos["holdings"]}
+
+    return {
+        "date": day,
+        "dates": days,
+        "index": idx,
+        "exec_date": exec_date,
+        "held": sorted(held) if held is not None else None,
+        "total": total,
+        "shown": len(rows),
+        "rows": rows,
+        "stats": stats,
+    }
+
+
+def positions(exp_id: str, run_id: str, date: Optional[str] = None) -> Optional[dict]:
+    """某一天的账户状态与实际持仓。
+
+    同时给出交易该日所用的信号日及其 topk（qlib 的 TopkDropoutStrategy 在
+    signal_strategy.py:141 用 ``shift=1`` 取信号：D 日交易用的是 D-1 日分数），
+    让「分数 top50」和「实际持仓」的对比建立在正确的时间错位上。
+
+    date 为空时取最后一个交易日；这与 predictions 的默认值不同——那边取
+    倒数第二天是为了能标出「次日持有状态」，这里取最后一天是因为那是
+    账本最完整的时点。前端用 predictions.exec_date 对齐两者。
+    """
+    pos = _load_positions(exp_id, run_id)
+    if pos is None:
+        return None
+    try:
+        days = [str(d)[:10] for d in pos.keys()]
+    except Exception:
+        return None
+    if not days:
+        return None
+    day = date if date in days else days[-1]
+
+    original_key = None
+    for k in pos.keys():
+        if str(k)[:10] == day:
+            original_key = k
+            break
+    if original_key is None:
+        return None
+    p = pos[original_key]
+    raw = getattr(p, "position", {}) or {}
+
+    cash = raw.get("cash")
+    total = raw.get("now_account_value")
+    holdings = []
+    for code, v in raw.items():
+        if code in ("cash", "now_account_value") or not isinstance(v, dict):
+            continue
+
+        def f(x):
+            try:
+                xv = float(x)
+                return None if xv != xv else xv
+            except (TypeError, ValueError):
+                return None
+
+        holdings.append({
+            "instrument": str(code),
+            "amount": f(v.get("amount")),
+            "price": f(v.get("price")),
+            "weight": f(v.get("weight")),
+            "count_day": v.get("count_day"),
+        })
+    holdings.sort(key=lambda r: -(r["amount"] or 0))
+
+    idx = days.index(day)
+    signal_day = days[idx - 1] if idx > 0 else None
+    return {
+        "date": day,
+        "dates": days,
+        "index": idx,
+        "signal_date": signal_day,
+        "cash": float(cash) if cash is not None else None,
+        "total_value": float(total) if total is not None else None,
+        "holdings": holdings,
+        "count": len(holdings),
+    }
+
+
+def position_signal_compare(
+    exp_id: str, run_id: str, date: Optional[str] = None, topk: int = 50
+) -> Optional[dict]:
+    """持仓日 D 的实际持仓 vs 交易该日所用信号日 D-1 的 topK。
+
+    两个集合的差集各有含义：
+      - ``bought_from_top``：「信号 topK 里、且已持有」——策略认可且拿住了
+      - ``top_not_held``  ：「信号 topK 里、但没持有」——受 n_drop 每日换手上限
+                            所限还在排队，不是策略出错
+      - ``held_not_top`` ：「持有但已跌出信号 topK」——尚未被换掉
+    """
+    p = positions(exp_id, run_id, date)
+    if p is None:
+        return None
+    sig_day = p["signal_date"]
+    if sig_day is None:
+        return {"date": p["date"], "signal_date": None, "available": False}
+
+    got = _score_frame(exp_id, run_id, sig_day)
+    if got is None:
+        return {"date": p["date"], "signal_date": sig_day, "available": False}
+    scores, _days, _day = got
+    s = scores.astype(float).sort_values(ascending=False)
+    top = [str(x) for x in s.head(topk).index]
+
+    held = [h["instrument"] for h in p["holdings"]]
+    held_set = set(held)
+    top_set = set(top)
+    score_of = {str(k): (None if float(v) != float(v) else float(v)) for k, v in s.items()}
+
+    return {
+        "date": p["date"],
+        "signal_date": sig_day,
+        "available": True,
+        "topk": topk,
+        "overlap": len(top_set & held_set),
+        "top_not_held": [
+            {"instrument": c, "score": score_of.get(c)}
+            for c in top if c not in held_set
+        ],
+        "held_not_top": [
+            {"instrument": c, "score": score_of.get(c)}
+            for c in held if c not in top_set
+        ],
+    }
+
+
+def prediction_vs_label(exp_id: str, run_id: str, date: Optional[str] = None) -> Optional[dict]:
+    """某一天的预测分 vs 实际收益（label.pkl 的 LABEL0）。
+
+    标签是未来 N 日收益，序列末尾若干天没有标签（Ref($close,-N) 要往后看），
+    那些天返回空 rows 并标注 ``label_available=False``，不是错误。
+    """
+    got = _score_frame(exp_id, run_id, date)
+    if got is None:
+        return None
+    scores, days, day = got
+
+    label = _load_label(exp_id, run_id)
+    rows = []
+    label_available = False
+    if label is not None:
+        try:
+            lab = label.xs(day, level=0)
+            col = "LABEL0" if "LABEL0" in lab.columns else lab.columns[0]
+            lab = lab[col].astype(float)
+            joined = scores.astype(float).to_frame("score").join(lab.rename("label"), how="inner")
+            for inst, r in joined.iterrows():
+                sc, lb = float(r["score"]), float(r["label"])
+                if sc != sc or lb != lb:
+                    continue
+                rows.append({"instrument": str(inst), "score": sc, "label": lb})
+            label_available = True
+        except Exception:
+            rows = []
+
+    # 按预测分五等分后的平均实际收益：检查单调性
+    buckets = []
+    if rows:
+        rs = sorted(rows, key=lambda r: r["score"])
+        n = len(rs)
+        for i in range(5):
+            seg = rs[i * n // 5:(i + 1) * n // 5]
+            if not seg:
+                continue
+            buckets.append({
+                "group": i + 1,
+                "n": len(seg),
+                "avg_score": sum(x["score"] for x in seg) / len(seg),
+                "avg_label": sum(x["label"] for x in seg) / len(seg),
+            })
+
+    return {
+        "date": day,
+        "dates": days,
+        "label_available": label_available,
+        "rows": rows,
+        "buckets": buckets,
+    }
+
+
+
 def _config_summary(exp_id: str, run_id: str) -> Optional[dict]:
     """Top-level knobs from the logged config pickle (not the full task tree)."""
     path = _art_dir(exp_id, run_id) / "config"
@@ -584,10 +1031,24 @@ def _extras(exp_id: str, run_id: str, params: dict) -> dict:
         "bench_series": _series_from_pickle(
             exp_id, run_id, "portfolio_analysis/report_normal_1day.pkl", "bench"
         ),
+        # 账户层：总资产、持仓市值、现金。看板此前只读了 return/bench/turnover/cost 四列。
+        "account_series": _series_from_pickle(
+            exp_id, run_id, "portfolio_analysis/report_normal_1day.pkl", "account"
+        ),
+        "value_series": _series_from_pickle(
+            exp_id, run_id, "portfolio_analysis/report_normal_1day.pkl", "value"
+        ),
+        "cash_series": _series_from_pickle(
+            exp_id, run_id, "portfolio_analysis/report_normal_1day.pkl", "cash"
+        ),
+        # 撮合过程：逐日成交金额 / 成交笔数。此前只取了聚合后的 ffr/pa/pos。
+        "deal_series": _indicators_frame(exp_id, run_id),
         "excess_series": _excess_series(exp_id, run_id),
         "risk_table": _risk_table(exp_id, run_id),
         "dataset_inputs": _dataset_inputs(exp_id, run_id),
         "config_summary": _config_summary(exp_id, run_id),
+        "config_full": _config_full(exp_id, run_id),
+        "model": _model_info(params),
         "code_diff": _text_artifact(exp_id, run_id, "code_diff.txt"),
         "code_status": _text_artifact(exp_id, run_id, "code_status.txt"),
     }
@@ -614,6 +1075,139 @@ def get_run(run_id: str) -> Optional[dict]:
     row["artifact_uri"] = run.info.artifact_uri
     row["extras"] = _extras(row["experiment_id"], run_id, run.data.params)
     return row
+
+
+# ── 产物内容预览 ──────────────────────────────────────────────────────────
+# 产物树此前只显示文件名和大小，点不开。这里让每个 pkl 至少能回答
+# 「这个文件里有什么」：类型、shape、列名、前几行。
+
+PREVIEW_ROWS = 5
+PREVIEW_MAX_CHARS = 4000
+
+
+def resolve_artifact(exp_id: str, run_id: str, rel: str) -> Optional[Path]:
+    """解析 run 产物目录下的相对路径，拒绝任何越界访问。"""
+    if not rel or rel.startswith(("/", "\\")) or ".." in rel.replace("\\", "/").split("/"):
+        return None
+    base = (_art_dir(exp_id, run_id)).resolve()
+    path = (base / rel).resolve()
+    if base not in path.parents and path != base:
+        return None
+    return path if path.is_file() else None
+
+
+def _preview_value(v):
+    """把单元格值转成可 JSON 化的短字符串。"""
+    try:
+        f = float(v)
+        if f != f:
+            return None
+        return round(f, 6)
+    except (TypeError, ValueError):
+        s = str(v)
+        return s[:60] + ("…" if len(s) > 60 else "")
+
+
+def artifact_preview(exp_id: str, run_id: str, rel: str) -> Optional[dict]:
+    path = resolve_artifact(exp_id, run_id, rel)
+    if path is None:
+        return None
+
+    size = path.stat().st_size
+    suffix = path.suffix.lower()
+
+    if suffix in (".pkl", ".pickle"):
+        try:
+            obj = _load_pickle(path)
+        except Exception as e:
+            return {"path": rel, "size": size, "kind": "pickle", "error": f"无法反序列化：{e}"}
+
+        out = {"path": rel, "size": size, "kind": "pickle", "type": type(obj).__name__}
+
+        if hasattr(obj, "shape") and hasattr(obj, "columns"):
+            out["shape"] = [int(x) for x in obj.shape]
+            out["columns"] = [str(c) for c in obj.columns][:60]
+            names = getattr(obj.index, "names", None)
+            out["index_names"] = [str(x) if x is not None else None for x in (names or [])]
+            try:
+                head = obj.head(PREVIEW_ROWS)
+                out["rows"] = [
+                    {str(k): _preview_value(v) for k, v in row.items()}
+                    for _, row in head.iterrows()
+                ]
+            except Exception:
+                pass
+        elif hasattr(obj, "shape"):
+            out["shape"] = [int(x) for x in obj.shape]
+            try:
+                out["sample"] = [_preview_value(v) for v in list(obj[:PREVIEW_ROWS])]
+            except Exception:
+                pass
+        elif isinstance(obj, dict):
+            out["items"] = [str(k) for k in list(obj)[:60]]
+            out["item_count"] = len(obj)
+        else:
+            out["sample"] = str(obj)[:600]
+        return out
+
+    if suffix in (".yaml", ".yml", ".txt", ".json", ".md", ".py", ".log", ".csv"):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            return {"path": rel, "size": size, "kind": "text", "error": str(e)}
+        return {
+            "path": rel,
+            "size": size,
+            "kind": "text",
+            "text": text[:PREVIEW_MAX_CHARS],
+            "truncated": len(text) > PREVIEW_MAX_CHARS,
+            "lines": text.count("\n") + 1,
+        }
+
+    return {"path": rel, "size": size, "kind": "binary", "note": "二进制文件，无预览"}
+
+
+# ── 特征重要性 ────────────────────────────────────────────────────────────
+# params.pkl 里存着训练好的模型对象。LightGBM / DoubleEnsemble 都实现了
+# get_feature_importance()。反序列化需要能 import 到当时的模型类，缺依赖
+# （CatBoost/PyTorch）或类已改动时会失败，页面要如实说明而不是空白。
+
+def feature_importance(exp_id: str, run_id: str, top: int = 40) -> Optional[dict]:
+    path = _art_dir(exp_id, run_id) / "params.pkl"
+    if not path.is_file():
+        return None
+    try:
+        model = _load_pickle(path)
+    except Exception as e:
+        return {"available": False, "reason": f"无法反序列化模型对象：{e}"}
+
+    fn = getattr(model, "get_feature_importance", None)
+    if not callable(fn):
+        return {
+            "available": False,
+            "reason": f"{type(model).__name__} 没有 get_feature_importance()",
+            "model_class": type(model).__name__,
+        }
+    try:
+        imp = fn()
+    except Exception as e:
+        return {"available": False, "reason": f"get_feature_importance() 失败：{e}"}
+
+    try:
+        items = [(str(k), float(v)) for k, v in imp.items()]
+        items.sort(key=lambda kv: -abs(kv[1]))
+        total = sum(abs(v) for _, v in items) or 1.0
+        return {
+            "available": True,
+            "model_class": type(model).__name__,
+            "count": len(items),
+            "rows": [
+                {"feature": k, "importance": v, "share": abs(v) / total}
+                for k, v in items[:top]
+            ],
+        }
+    except Exception as e:
+        return {"available": False, "reason": f"无法整理重要性：{e}"}
 
 
 def list_renders(exp_id: str, run_id: str) -> list[str]:

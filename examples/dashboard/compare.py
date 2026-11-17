@@ -126,6 +126,8 @@ SPEC = [
         ("pos", "pos 胜率", "pos", "float", 1),
         ("turnover_mean", "平均换手率", "turnover", "pct", -1),
         ("cost_mean", "平均每日成本", "cost", "pct", -1),
+        ("deal_mean", "平均每日成交金额", "deal_amount", "count", 0),
+        ("deal_count_mean", "平均每日成交笔数", "count", "float", 0),
     ]),
     ("outcome", "结果", [
         ("ann_cost", "含成本年化超额", "annualized_return", "pct", 1),
@@ -135,6 +137,7 @@ SPEC = [
         ("dd_cost", "最大回撤", "max_drawdown", "pct", 1),
         ("std_cost", "日超额标准差", "std", "float", -1),
         ("cost_drag", "成本损耗", "cost", "pct", 1),
+        ("cash_ratio", "平均现金占比", "cash", "pct", -1),
     ]),
     ("training", "训练", [
         ("rounds", "训练轮数", None, "count", 0),
@@ -224,6 +227,11 @@ def _core(run: dict, extras: dict) -> dict:
         "pos": m.get("1day.pos"),
         "turnover_mean": turn.get("mean"),
         "cost_mean": cst.get("mean"),
+        # 撮合过程：此前只对比 ffr/pa/pos 三个聚合数，逐日成交的规模没进对照表
+        "deal_mean": ((extras.get("deal_series") or {}).get("deal_amount") or {}).get("stats", {}).get("mean")
+        if (extras.get("deal_series") or {}).get("deal_amount") else None,
+        "deal_count_mean": ((extras.get("deal_series") or {}).get("count") or {}).get("stats", {}).get("mean")
+        if (extras.get("deal_series") or {}).get("count") else None,
         "ann_cost": ann_c,
         "ann_nocost": ann_nc,
         "ir_cost": m.get("1day.excess_return_with_cost.information_ratio"),
@@ -231,12 +239,27 @@ def _core(run: dict, extras: dict) -> dict:
         "dd_cost": m.get("1day.excess_return_with_cost.max_drawdown"),
         "std_cost": m.get("1day.excess_return_with_cost.std"),
         "cost_drag": M.cost_drag(ann_nc, ann_c),
+        # 账户层：现金占比 = 现金 / 总资产。持仓利用率的一个直接读数。
+        "cash_ratio": _cash_ratio(extras),
         "rounds": tc.get("rounds"),
         "l2_train": train,
         "l2_valid": valid,
         "l2_gap": valid - train if train is not None and valid is not None else None,
         "l2_valid_min": curve_min("l2.valid"),
     }
+
+
+def _cash_ratio(extras: dict) -> Optional[float]:
+    """平均现金占比。现金长期偏高说明仓位没用满。"""
+    cash = extras.get("cash_series") or {}
+    acct = extras.get("account_series") or {}
+    cv = [v for v in (cash.get("values") or []) if v is not None]
+    av = [v for v in (acct.get("values") or []) if v is not None]
+    if not cv or not av:
+        return None
+    n = min(len(cv), len(av))
+    ratios = [cv[i] / av[i] for i in range(n) if av[i]]
+    return sum(ratios) / len(ratios) if ratios else None
 
 
 def _same(values: list) -> bool:

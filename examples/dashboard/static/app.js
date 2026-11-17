@@ -386,9 +386,121 @@ function linePair(aVals, bVals, opts) {
   </div>`;
 }
 
+/* Histogram: 分数分布。横轴分箱，纵轴只数。零线单列，方便看正负分界。 */
+function histSVG(values, opts) {
+  const { bins = 20 } = opts || {};
+  const vals = values.filter(v => Number.isFinite(v));
+  if (vals.length < 2) return `<p class="plate-empty">没有可画的数据</p>`;
+
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi === lo) { hi = lo + 1e-12; }
+  const step = (hi - lo) / bins;
+  const counts = new Array(bins).fill(0);
+  for (const v of vals) {
+    counts[Math.min(bins - 1, Math.floor((v - lo) / step))] += 1;
+  }
+  const maxC = Math.max(...counts) || 1;
+
+  const padX = 4, padY = 8;
+  const w = W - padX * 2, h = H - padY * 2;
+  const bw = w / bins;
+  const zeroX = lo <= 0 && hi >= 0 ? padX + ((0 - lo) / (hi - lo)) * w : null;
+
+  const bars = counts.map((c, i) => {
+    const bh = maxC ? (c / maxC) * h : 0;
+    const x = padX + i * bw;
+    const isNeg = (lo + (i + 0.5) * step) < 0;
+    return `<rect x="${x.toFixed(1)}" y="${(padY + h - bh).toFixed(1)}" width="${Math.max(bw - 1, 0.5).toFixed(1)}"
+      height="${bh.toFixed(1)}" fill="${isNeg ? "var(--ochre)" : "var(--indigo)"}" opacity=".55">
+      <title>${num(lo + i * step, 4)} ~ ${num(lo + (i + 1) * step, 4)}  ${c} 只</title></rect>`;
+  }).join("");
+
+  const zl = zeroX == null ? "" :
+    `<line x1="${zeroX.toFixed(1)}" x2="${zeroX.toFixed(1)}" y1="${padY}" y2="${padY + h}" class="zero"/>`;
+
+  return `<div class="line">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+      ${zl}${bars}
+    </svg>
+    <div class="line-scale"><span>${num(lo, 4)}</span><span>${num(hi, 4)}</span></div>
+  </div>`;
+}
+
+/* 分数分布用柱状，柱宽必须按像素算，所以不拉伸 viewBox（preserveAspectRatio
+   的 none 会把柱子横向拉扁）。这里保持等比，柱子在容器宽度内居中。 */
+function histSVG(values, opts) {
+  const { bins = 20 } = opts || {};
+  const vals = values.filter(v => Number.isFinite(v));
+  if (vals.length < 2) return `<p class="plate-empty">没有可画的数据</p>`;
+
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi === lo) { hi = lo + 1e-12; }
+  const step = (hi - lo) / bins;
+  const counts = new Array(bins).fill(0);
+  for (const v of vals) {
+    counts[Math.min(bins - 1, Math.floor((v - lo) / step))] += 1;
+  }
+  const maxC = Math.max(...counts) || 1;
+
+  const padX = 4, padY = 8;
+  const w = W - padX * 2, h = H - padY * 2;
+  const bw = w / bins;
+  const zeroX = lo <= 0 && hi >= 0 ? padX + ((0 - lo) / (hi - lo)) * w : null;
+
+  const bars = counts.map((c, i) => {
+    const bh = maxC ? (c / maxC) * h : 0;
+    const x = padX + i * bw;
+    const isNeg = (lo + (i + 0.5) * step) < 0;
+    return `<rect x="${x.toFixed(1)}" y="${(padY + h - bh).toFixed(1)}" width="${Math.max(bw - 1, 0.5).toFixed(1)}"
+      height="${bh.toFixed(1)}" fill="${isNeg ? "var(--ochre)" : "var(--indigo)"}" opacity=".55">
+      <title>${num(lo + i * step, 4)} ~ ${num(lo + (i + 1) * step, 4)}  ${c} 只</title></rect>`;
+  }).join("");
+
+  const zl = zeroX == null ? "" :
+    `<line x1="${zeroX.toFixed(1)}" x2="${zeroX.toFixed(1)}" y1="${padY}" y2="${padY + h}" class="zero"/>`;
+
+  return `<div class="line">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img"
+      aria-label="分数分布直方图，共 ${vals.length} 只">
+      ${zl}${bars}
+    </svg>
+    <div class="line-scale"><span>${num(lo, 4)}</span><span>${num(hi, 4)}</span></div>
+  </div>`;
+}
+function scatterSVG(pairs, opts) {
+  const { xLabel = "预测分", yLabel = "实际收益" } = opts || {};
+  const pts = pairs.filter(p => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+  if (pts.length < 2) return `<p class="plate-empty">没有可画的数据</p>`;
+
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  let x0 = Math.min(...xs), x1 = Math.max(...xs);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  y0 = Math.min(y0, 0); y1 = Math.max(y1, 0);
+  if (x1 === x0) { x1 = x0 + 1e-12; }
+  if (y1 === y0) { y1 = y0 + 1e-12; }
+
+  const padX = 4, padY = 8;
+  const w = W - padX * 2, h = H - padY * 2;
+  const X = v => padX + ((v - x0) / (x1 - x0)) * w;
+  const Y = v => padY + h - ((v - y0) / (y1 - y0)) * h;
+
+  const zeroY = Y(0).toFixed(1);
+  const dots = pts.map(p =>
+    `<circle cx="${X(p[0]).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="1.6"
+      fill="var(--indigo)" opacity=".45"/>`).join("");
+
+  return `<div class="line">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img"
+      aria-label="${esc(xLabel)} 与 ${esc(yLabel)} 散点">
+      <line x1="${padX}" x2="${padX + w}" y1="${zeroY}" y2="${zeroY}" class="zero"/>
+      ${dots}
+    </svg>
+    <div class="line-scale"><span>x ${num(x0, 4)} → ${num(x1, 4)}</span><span>y ${num(y0, 4)} → ${num(y1, 4)}</span></div>
+  </div>`;
+}
+
 let plateNo = 0;
-function plate({ title, note, body, meta, wide = false, id }) {
-  plateNo += 1;
+function plate({ title, note, body, meta, wide = false, id }) {  plateNo += 1;
   const anchor = id || `plate-${plateNo}`;
   return `<figure class="plate${wide ? " wide" : ""}" id="${anchor}">
     <figcaption class="plate-cap">
@@ -456,6 +568,16 @@ const state = {
   compare: null,        // last /api/compare payload
   job: null,            // { job_id, path } for the drawer's stream
   eventSource: null,
+  // ── 明细视图（批次一/二）──
+  tradeDate: null,      // 分数/持仓共用的日期
+  pred: null,           // /predictions 的返回
+  predTop: 50,          // 分数表显示前 N 只
+  pos: null,            // /positions 的返回
+  cmp: null,            // /position-signal 的返回
+  pvl: null,            // /prediction-vs-label 的返回
+  artPreview: null,     // /artifact 的返回
+  artPath: null,
+  featImp: null,        // /feature-importance 的返回
 };
 
 const MAX_COMPARE = 4;
@@ -795,6 +917,174 @@ async function selectRun(runId, configKey) {
   renderSpecimen();
   renderOutline();
   window.scrollTo({ top: 0, behavior: "instant" });
+
+  loadDetails(runId);
+}
+
+/* 明细数据（分数/持仓/预测vs实际/特征重要性）单独拉：主接口先出页面，
+   明细到了再补进来。任何一块失败都只是少一节，不阻塞整页。 */
+async function loadDetails(runId) {
+  state.tradeDate = null;
+  state.pred = null;
+  state.pos = null;
+  state.cmp = null;
+  state.pvl = null;
+  state.featImp = null;
+  state.artPath = null;
+  state.artPreview = null;
+
+  const j = async (url) => {
+    try {
+      const r = await fetch(url);
+      return r.ok ? await r.json() : null;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const [pred0, pvl0, fi] = await Promise.all([
+    j(`/api/runs/${encodeURIComponent(runId)}/predictions?top=${state.predTop}`),
+    j(`/api/runs/${encodeURIComponent(runId)}/prediction-vs-label`),
+    j(`/api/runs/${encodeURIComponent(runId)}/feature-importance?top=40`),
+  ]);
+  if (state.current && state.current.run_id !== runId) return;  // 用户已经切走
+
+  // 持仓按 pred.exec_date 拉：默认应展示「这批分数被拿去交易的那一天」，
+  // 两节才对得上。日期往下翻时 setTradeDate 会按同样规则处理。
+  const posDate = pred0 && pred0.exec_date ? `?date=${encodeURIComponent(pred0.exec_date)}` : "";
+  const [pos0, cmp0] = await Promise.all([
+    j(`/api/runs/${encodeURIComponent(runId)}/positions${posDate}`),
+    j(`/api/runs/${encodeURIComponent(runId)}/position-signal${posDate}`),
+  ]);
+  if (state.current && state.current.run_id !== runId) return;
+
+  state.pred = pred0;
+  state.pos = pos0;
+  state.cmp = cmp0;
+  state.pvl = pvl0;
+  state.featImp = fi;
+  if (pred0) state.tradeDate = pred0.date;
+
+  // 只替换受影响的章节，不重绘整页（会重置滚动位置和已挂载的图表）
+  repaintDetailSections();
+}
+
+/* 重绘时保持 plate 编号连续：把这三节的编号让出来，重新生成。 */
+function repaintDetailSections() {
+  const run = state.current;
+  const x = (state.detail && state.detail.run.extras) || {};
+  const map = [
+    ["#act-scores", () => actScores(run, x)],
+    ["#act-positions", () => actPositions(run, x)],
+  ];
+  for (const [sel, fn] of map) {
+    const node = document.querySelector(sel);
+    if (!node) continue;
+    const wrap = document.createElement("div");
+    wrap.innerHTML = fn();
+    node.replaceWith(wrap.firstElementChild);
+  }
+  // 特征一节在页面末尾，整页重建代价低且能保证编号正确
+  renderSpecimen();
+  renderOutline();
+}/* 换交易日：分数、持仓、预测vs实际一起翻。
+
+   选中的是「信号日」。分数用该日；持仓要用它对应的执行日（信号日的下一个
+   交易日），否则两节展示的日期不一致，标签和差集数字会对不上。 */
+async function setTradeDate(date) {
+  const runId = state.current && state.current.run_id;
+  if (!runId) return;
+  const q = encodeURIComponent(runId);
+
+  const j = async (url) => {
+    try {
+      const r = await fetch(url);
+      return r.ok ? await r.json() : null;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const pred = await j(`/api/runs/${q}/predictions?date=${encodeURIComponent(date)}&top=${state.predTop}`);
+  if (state.current && state.current.run_id !== runId) return;
+  if (!pred) return;
+
+  const execQ = pred.exec_date ? `?date=${encodeURIComponent(pred.exec_date)}` : "";
+  const [pos, cmp, pvl] = await Promise.all([
+    j(`/api/runs/${q}/positions${execQ}`),
+    j(`/api/runs/${q}/position-signal${execQ}`),
+    j(`/api/runs/${q}/prediction-vs-label?date=${encodeURIComponent(pred.date)}`),
+  ]);
+  if (state.current && state.current.run_id !== runId) return;
+
+  state.pred = pred;
+  state.tradeDate = pred.date;
+  state.pos = pos;
+  state.cmp = cmp;
+  state.pvl = pvl;
+
+  const run = state.current;
+  const x = (state.detail && state.detail.run.extras) || {};
+  const repaint = (sel, html) => {
+    const node = document.querySelector(sel);
+    if (!node) return;
+    const wrap = document.createElement("div");
+    wrap.innerHTML = html;
+    node.replaceWith(wrap.firstElementChild);
+  };
+  repaint("#act-scores", actScores(run, x));
+  repaint("#act-positions", actPositions(run, x));
+  renderOutline();
+}
+
+/* 分数表带两个可点元素：日期下拉、前 N 只按钮、产物预览按钮。用事件委托
+   挂在 #specimen 上，因为它们由 innerHTML 重建，直接绑会丢。 */
+function mountDetails() {
+  const host = el("specimen");
+  if (!host || host.dataset.detailsBound === "1") return;
+  host.dataset.detailsBound = "1";
+
+  host.addEventListener("change", (e) => {
+    if (e.target && e.target.id === "date-pick") {
+      setTradeDate(e.target.value);
+    }
+  });
+
+  host.addEventListener("click", async (e) => {
+    const topBtn = e.target.closest("[data-top]");
+    if (topBtn) {
+      state.predTop = Number(topBtn.dataset.top) || 0;
+      if (state.tradeDate) setTradeDate(state.tradeDate);
+      return;
+    }
+
+    const artBtn = e.target.closest("[data-art]");
+    if (artBtn) {
+      const path = artBtn.dataset.art;
+      const runId = state.current && state.current.run_id;
+      if (!runId) return;
+      if (state.artPath === path) {   // 再点一次收起
+        state.artPath = null;
+        state.artPreview = null;
+      } else {
+        state.artPath = path;
+        state.artPreview = null;
+      }
+      renderSpecimen();
+      renderOutline();
+      if (state.artPath) {
+        try {
+          const r = await fetch(`/api/runs/${encodeURIComponent(runId)}/artifact?path=${encodeURIComponent(path)}`);
+          state.artPreview = r.ok ? await r.json() : { path, error: `读取失败：${r.status}` };
+        } catch (err) {
+          state.artPreview = { path, error: `读取失败：${err.message}` };
+        }
+        renderSpecimen();
+        renderOutline();
+      }
+      return;
+    }
+  });
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1451,6 +1741,8 @@ function renderSpecimen() {
     actSetting(run, x),
     actConfigSource(run, x),
     actSignal(run, x),
+    actScores(run, x),
+    actPositions(run, x),
     actExecution(run, x),
     actOutcome(run, x),
     actTraining(run, x),
@@ -1460,11 +1752,13 @@ function renderSpecimen() {
         只是换了更专业的视角——分组收益、分层收益、月度稳定性都在这里。</p>
       ${figures}
     </section>` : "",
-    actRecord(run),
+    actFeatures(run, x),
+    actRecord(run, x),
     actProvenance(run, x),
   ].join("");
 
   observePlots();
+  mountDetails();
 }
 
 /* --- 0. identity: the run as a specimen label --- */
@@ -1610,30 +1904,28 @@ function actSetting(run, x) {
   if (ek.open_cost != null) rows.push(["交易成本", `开 ${ek.open_cost} · 平 ${ek.close_cost} · 最低 ${ek.min_cost}`]);
   if (ek.limit_threshold != null) rows.push(["撮合规则", `限价阈值 ${ek.limit_threshold} · 成交价 ${ek.deal_price}`]);
 
-  /* 模型超参：每个都可以展开讲解 */
-  const hyper = [
-    ["num_leaves", p["model.kwargs.num_leaves"]],
-    ["learning_rate", p["model.kwargs.learning_rate"]],
-    ["max_depth", p["model.kwargs.max_depth"]],
-    ["lambda_l1", p["model.kwargs.lambda_l1"]],
-    ["lambda_l2", p["model.kwargs.lambda_l2"]],
-    ["colsample_bytree", p["model.kwargs.colsample_bytree"]],
-    ["subsample", p["model.kwargs.subsample"]],
-  ].filter(([, v]) => v != null);
+  /* 模型超参：按 model.class 动态取。此前硬编码 LightGBM 的 7 个键，
+     跑 DoubleEnsemble 时真正定义模型的参数一个都显示不出来。 */
+  const model = x.model || {};
+  const hyper = Object.entries(model.hyper || {});
 
   const hyperHTML = hyper.map(([k, v]) => {
     const g = GLOSSARY[k];
     return `<div class="hyper">
-      <dt>${anno(v, k)}<span class="hyper-name">${esc((g && g.name.split(" · ")[1]) || k)}</span></dt>
+      <dt>${anno(v, k)}<span class="hyper-name">${esc((g && g.name) || k)}</span></dt>
     </div>`;
   }).join("");
 
   return `<section class="act" data-act="setting">
     <h2 class="act-head"><span class="act-no">一</span>实验设置</h2>
     <p class="act-lede">这是一次「喂进去什么」的记录。下面每个数字都可以点开看它控制什么。</p>
+    ${model.class ? `<dl class="spec tight">
+      <dt>模型</dt><dd>${esc(model.class)}${model.module_path ? ` · <code>${esc(model.module_path)}</code>` : ""}</dd>
+    </dl>` : ""}
     <dl class="spec">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>
-    ${hyper.length ? `<div class="sub-head"><h3>模型超参</h3>
-      <p>LightGBM 的七个旋钮。括号里是本次取值，点数字看含义。</p></div>
+    ${hyper.length ? `<div class="sub-head"><h3>模型超参 <span class="n">${hyper.length}</span></h3>
+      <p>${esc(model.class || "模型")} 本次实际生效的参数，值取自 MLflow 记录的
+        <code>model.kwargs.*</code>。点数字看含义。</p></div>
       <dl class="hyper-grid">${hyperHTML}</dl>` : ""}
   </section>`;
 }
@@ -1820,7 +2112,224 @@ function icS_consistent(st, ic) {
     : `只有 ${pct(st.pos_ratio, 1)} 的交易日 IC 为正，方向不稳定，任何收益都更像运气。`;
 }
 
-/* --- 3. execution: order -> fill --- */
+/* --- 3b. scores: what the model picked each day ---------------------
+   pred.pkl 是整条流水线最原始的输出：每天给全市场打的分数。MLflow 只存
+   聚合后的 IC，看不到「今天选了谁」。这一节是自建看板相对 MLflow 的
+   第一个增量。 */
+
+function actScores(run, x) {
+  const p = state.pred;
+  if (!p && !run.extras.pred_available) {
+    // 首屏还没拉数据：给出骨架，数据到了再重绘
+    return `<section class="act" data-act="scores" id="act-scores">
+      <h2 class="act-head"><span class="act-no">四</span>分数：模型每天选了什么</h2>
+      <p class="act-lede">pred.pkl 里存着逐日、逐股的预测分数——这是整条流水线最原始的产出，
+        MLflow 只记录聚合后的 IC，看不到「今天选了谁」。</p>
+      <p class="muted-note">正在读取预测分数…</p>
+    </section>`;
+  }
+  if (!p) {
+    return `<section class="act" data-act="scores" id="act-scores">
+      <h2 class="act-head"><span class="act-no">四</span>分数：模型每天选了什么</h2>
+      <p class="flag">这个 run 没有 pred.pkl，无法展示逐股分数。</p>
+    </section>`;
+  }
+
+  const st = p.stats || {};
+  const opts = [50, 100, 300, 0];
+  const dateOpts = p.dates.map(d =>
+    `<option value="${esc(d)}"${d === p.date ? " selected" : ""}>${esc(d)}</option>`).join("");
+
+  // 「持有」标记由后端按「这批分数被拿去交易的那一天」的实际持仓给出
+  // （predictions.held）。qlib 在 T 日交易用 T-1 日信号，所以分数日与
+  // 持仓日天然相差一天；前端不自己拼日期，避免拿错日子。
+  const posHeld = p.held ? new Set(p.held) : null;
+
+  const rows = p.rows.map(r => {
+    let tag = "";
+    let miss = false;
+    if (posHeld) {
+      if (posHeld.has(r.instrument)) {
+        tag = `<span class="tag tag-held">持有</span>`;
+      } else {
+        tag = `<span class="tag tag-miss">未持有</span>`;
+        miss = true;
+      }
+    }
+    return `<tr class="${miss ? "row-miss" : ""}">
+      <td class="num">${r.rank}</td>
+      <td><code>${esc(r.instrument)}</code></td>
+      <td class="num">${num(r.score)}</td>
+      <td>${tag}</td>
+    </tr>`;
+  }).join("");
+
+  return `<section class="act" data-act="scores" id="act-scores">
+    <h2 class="act-head"><span class="act-no">四</span>分数：模型每天选了什么</h2>
+    <p class="act-lede">pred.pkl 里存着逐日、逐股的预测分数——这是整条流水线最原始的产出，
+      MLflow 只记录聚合后的 IC，看不到「今天选了谁」。
+      分数是截面标准分（Alpha158 默认对标签做 CSZScoreNorm），有正有负。</p>
+
+    <div class="date-bar">
+      <label>交易日 <select id="date-pick">${dateOpts}</select></label>
+      <span class="muted-note">共 ${p.dates.length} 个交易日</span>
+      <span class="muted-note">当日标的 ${p.total} 只</span>
+    </div>
+
+    ${plate({
+      id: "plate-score-dist",
+      title: "当日分数分布",
+      note: "横轴分数、纵轴只数。整条分布偏右说明当天多数股票被看好，偏左则相反。",
+      meta: `${p.total} 只`,
+      body: histSVG(p.rows.map(r => r.score), { bins: 24 }) +
+        statBand([
+          { label: "均值", value: num(st.mean) },
+          { label: "中位数", value: num(st.median) },
+          { label: "最大", value: num(st.max) },
+          { label: "最小", value: num(st.min) },
+          { label: "正分占比", value: pct(st.pos_ratio, 1) },
+        ]),
+    })}
+
+    <div class="sub-head"><h3>分数明细 <span class="n">${p.shown} / ${p.total}</span></h3>
+      <p>按分数降序。「持有」标记对照的是 <b>${esc(p.exec_date || "次日")}</b> 的实际持仓——
+        这批分数被用于那天的交易，qlib 在 T 日交易用 T-1 日信号，所以与下一节的持仓日相差一天。</p></div>
+    <div class="pick-top">
+      ${opts.map(n => `<button class="chip${(state.predTop === n) ? " on" : ""}"
+        data-top="${n}">${n === 0 ? "全部" : "前 " + n}</button>`).join("")}
+    </div>
+    <table class="grid score-table">
+      <thead><tr><th class="num">排名</th><th>股票</th><th class="num">分数</th><th>持仓</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+
+    ${pvlBlock()}
+  </section>`;
+}
+
+/* 预测 vs 实际：同日散点 + 五等分单调性 */
+function pvlBlock() {
+  const d = state.pvl;
+  if (!d) return "";
+  if (!d.label_available) {
+    return `<div class="sub-head"><h3>预测 vs 实际</h3>
+      <p class="muted-note">这一天的标签尚未生成（标签是未来 N 日收益，序列末尾若干天没有），
+        换早一点的日期再看。</p></div>`;
+  }
+  const pts = d.rows.slice(0, 400);
+  const b = d.buckets || [];
+  const mono = b.length >= 2 && b.every((x, i) => i === 0 || x.avg_label >= b[i - 1].avg_label);
+  return `<div class="sub-head"><h3>预测 vs 实际</h3>
+    <p>每个点是一只股票：横轴是模型给的分数，纵轴是当天实际发生的未来收益（LABEL0）。
+      点越集中在右上说明预测越准。</p></div>
+    ${plate({
+      id: "plate-pvl",
+      title: "预测分 vs 实际收益",
+      note: "整段散点看不出趋势、五等分也不单调，都说明这一天的信号偏弱——单日结论要看整段 IC。",
+      meta: `${d.rows.length} 只`,
+      body: scatterSVG(pts.map(r => [r.score, r.label])) +
+        (b.length ? statBand(b.map(x => ({
+          label: `第 ${x.group} 组`,
+          value: signed(x.avg_label, 2),
+        }))) : "") +
+        `<p class="verdict-line">${mono
+          ? "五等分平均收益随分数单调上升，这一天的分数有区分度。"
+          : "五等分平均收益不单调——单日预测存在噪声，判断信号强弱看整段 IC。"}</p>`,
+    })}`;
+}
+
+/* --- 3c. positions: what the strategy actually held ------------------
+   positions_normal_1day.pkl 记录每天收盘后的真实持仓。重点不是列表本身，
+   而是它和「信号 topK」的差集：TopkDropoutStrategy 受 n_drop 每日换手上限
+   约束，信号里排前面的股票不一定会立刻买到。 */
+
+function actPositions(run, x) {
+  const p = state.pos;
+  if (!p) {
+    return `<section class="act" data-act="positions" id="act-positions">
+      <h2 class="act-head"><span class="act-no">五</span>持仓：策略实际买了什么</h2>
+      <p class="muted-note">正在读取持仓明细…</p>
+    </section>`;
+  }
+
+  const c = state.cmp;
+  const rows = p.holdings.map(h => `<tr>
+    <td><code>${esc(h.instrument)}</code></td>
+    <td class="num">${num(h.amount, 0)}</td>
+    <td class="num">${num(h.price, 3)}</td>
+    <td class="num">${pct(h.weight, 2)}</td>
+    <td class="num">${h.count_day ?? "—"}</td>
+  </tr>`).join("");
+
+  // 这一节展示的是「执行日」的持仓；它对应的信号来自上一交易日。
+  // 上一节「分数」展示的是信号日，所以两节相差一天——在标题里点明，
+  // 否则用户会拿两个不同日期的数字互相核对。
+  const sigDate = p.signal_date;
+  const sigNote = sigDate
+    ? `这一节是执行日 <b>${esc(p.date)}</b> 的持仓，用的是 <b>${esc(sigDate)}</b> 的信号
+       （上一节默认展示的就是那天）；上面的分数表则按信号日本身展示，所以两者相差一个交易日。`
+    : "";
+
+  const cmpBlock = !c || !c.available ? "" : `
+    <div class="sub-head"><h3>信号 top${c.topk} 与实际持仓的差集</h3>
+      <p>qlib 的 TopkDropoutStrategy 在 T 日交易时用的是 <b>T-1 日</b>的信号
+        （<code>signal_strategy.py:141</code> 的 <code>shift=1</code>），
+        所以这里对比的是持仓日 <b>${esc(c.date)}</b> 与信号日 <b>${esc(c.signal_date)}</b>。
+        每天最多卖 <code>n_drop</code> 只、买 <code>n_drop</code> 只，所以信号里排前面的
+        股票会排队等待，不会立刻被买入。</p></div>
+    <div class="triple">
+      <div><dt class="num">${c.overlap}<span>信号 top${c.topk} 与实际持仓重合</span></dt></div>
+      <div><dt class="num">${c.top_not_held.length}<span>信号选中但尚未买入</span></dt></div>
+      <div><dt class="num">${c.held_not_top.length}<span>持有但已跌出信号</span></dt></div>
+    </div>
+    <p class="muted-note">重合 + 未买入 = ${c.overlap + c.top_not_held.length}（信号侧，应为 ${c.topk}）；
+      重合 + 跌出信号 = ${c.overlap + c.held_not_top.length}（持仓侧，与上方「持仓只数」一致）。
+      持仓数偶尔不是 ${c.topk} 只，是涨跌停或停牌导致少数委托当天没成交。</p>
+    <div class="two-col">
+      <div>
+        <div class="sub-head"><h3>信号选中但未持有</h3>
+          <p>受每日换手上限约束，仍在排队。</p></div>
+        <table class="grid compact"><thead><tr><th>股票</th><th class="num">信号分数</th></tr></thead>
+          <tbody>${c.top_not_held.map(r => `<tr><td><code>${esc(r.instrument)}</code></td>
+            <td class="num">${num(r.score)}</td></tr>`).join("")}</tbody></table>
+      </div>
+      <div>
+        <div class="sub-head"><h3>持有但已跌出信号</h3>
+          <p>尚未被换掉，还在等卖出名额。</p></div>
+        <table class="grid compact"><thead><tr><th>股票</th><th class="num">信号分数</th></tr></thead>
+          <tbody>${c.held_not_top.map(r => `<tr><td><code>${esc(r.instrument)}</code></td>
+            <td class="num">${num(r.score)}</td></tr>`).join("")}</tbody></table>
+      </div>
+    </div>`;
+
+  return `<section class="act" data-act="positions" id="act-positions">
+    <h2 class="act-head"><span class="act-no">五</span>持仓：策略实际买了什么</h2>
+    <p class="act-lede">分数是「想买什么」，持仓是「真的买了什么」。两者之间的差集，
+      就是换手上限 <code>n_drop</code> 留下的痕迹。</p>
+    ${sigNote ? `<p class="muted-note">${sigNote}</p>` : ""}
+
+    <dl class="spec tight">
+      <dt>持仓日</dt><dd>${esc(p.date)}</dd>
+      <dt>信号日</dt><dd>${esc(p.signal_date || "—")}（按 T-1 取信号）</dd>
+      <dt>现金</dt><dd>${num(p.cash, 0)}</dd>
+      <dt>总资产</dt><dd>${num(p.total_value, 0)}</dd>
+      <dt>现金占比</dt><dd>${p.total_value ? pct(p.cash / p.total_value, 2) : "—"}</dd>
+      <dt>持仓只数</dt><dd>${p.count}</dd>
+    </dl>
+
+    ${cmpBlock}
+
+    <div class="sub-head"><h3>持仓明细 <span class="n">${p.count} 只</span></h3>
+      <p>按股数降序。成本价是复权后的持仓均价，持仓天数是连续持有的交易日数。</p></div>
+    <table class="grid">
+      <thead><tr><th>股票</th><th class="num">股数</th><th class="num">成本价</th>
+        <th class="num">权重</th><th class="num">持仓天数</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </section>`;
+}
+
+/* --- 5. execution: order -> fill --- */
 function actExecution(run, x) {
   const m = run.all_metrics || {};
   const ffr = m["1day.ffr"], pa = m["1day.pa"], pos = m["1day.pos"];
@@ -1854,6 +2363,38 @@ function actExecution(run, x) {
       note: "手续费加印花税。换手冲高的那些天，成本会一起冲高——这两条线的形状往往高度相似。",
       meta: `${cost.total} 个交易日`,
       body: lineSVG(cost.values, { labels: cost.dates, color: "var(--ochre)" }),
+    }));
+  }
+
+  // 逐日成交金额与笔数：indicators_normal_1day.pkl 里本来就有，此前只取了聚合后的
+  // ffr/pa/pos 三个数。这两条序列回答「每天实际成交了多少」。
+  const deal = x.deal_series || {};
+  const da = deal.deal_amount, cnt = deal.count;
+  if (da) {
+    plates.push(plate({
+      id: "plate-deal",
+      title: "逐日成交金额",
+      note: "当天所有委托实际成交的金额。它和换手率、成本是同一条因果链上的三个观测点。",
+      meta: `${da.total} 个交易日`,
+      body: lineSVG(da.values, { labels: da.dates }) +
+        statBand([
+          { label: "均值", value: num(da.stats && da.stats.mean, 0) },
+          { label: "95% 分位", value: num(da.stats && da.stats.p95, 0) },
+          { label: "最大", value: num(da.stats && da.stats.max, 0) },
+        ]),
+    }));
+  }
+  if (cnt) {
+    plates.push(plate({
+      id: "plate-deal-count",
+      title: "逐日成交笔数",
+      note: "成交笔数受 n_drop 上限约束，理论上一只股票一笔。笔数突然放大通常是建仓日。",
+      meta: `${cnt.total} 个交易日`,
+      body: lineSVG(cnt.values, { labels: cnt.dates, color: "var(--ink-3)" }) +
+        statBand([
+          { label: "均值", value: num(cnt.stats && cnt.stats.mean, 1) },
+          { label: "95% 分位", value: num(cnt.stats && cnt.stats.p95, 0) },
+        ]),
     }));
   }
 
@@ -1894,6 +2435,37 @@ function actOutcome(run, x) {
           <span><i style="background:var(--ochre)"></i>基准收益</span>
         </div>` +
         linePair(ret.values, bench ? bench.values : [], { aName: "持仓", bName: "基准" }),
+    }));
+  }
+
+  // 账户层三条序列：总资产、持仓市值、现金。report_normal_1day.pkl 里本来就有，
+  // 此前只读了 return/bench/turnover/cost 四列。
+  const acct = x.account_series, held = x.value_series, cashS = x.cash_series;
+  if (acct) {
+    plates.push(plate({
+      id: "plate-account",
+      title: "总资产",
+      note: "账户逐日市值。起点 1 亿，曲线的形状就是最终收益的来源。",
+      meta: `${acct.total} 个交易日`,
+      body: lineSVG(acct.values, { labels: acct.dates }) +
+        statBand([
+          { label: "期末", value: num(acct.values[acct.values.length - 1], 0) },
+          { label: "最高", value: num(acct.stats && acct.stats.max, 0) },
+          { label: "最低", value: num(acct.stats && acct.stats.min, 0) },
+        ]),
+    }));
+  }
+  if (held && cashS) {
+    plates.push(plate({
+      id: "plate-hold-cash",
+      title: "持仓市值 vs 现金",
+      note: "两条线之和就是总资产。现金长期偏高说明仓位没用满，持仓占比突然下跌说明在大幅减仓。",
+      meta: `${held.total} 个交易日`,
+      body: `<div class="curve-key">
+          <span><i style="background:var(--indigo)"></i>持仓市值</span>
+          <span><i style="background:var(--ochre)"></i>现金</span>
+        </div>` +
+        linePair(held.values, cashS.values, { aName: "持仓市值", bName: "现金" }),
     }));
   }
 
@@ -1980,8 +2552,46 @@ function actFigures(run, x) {
   </section>`;
 }
 
+/* --- 6b. features: which factors the model leaned on --------------- */
+function actFeatures(run, x) {
+  const fi = state.featImp;
+  if (!fi) return "";
+  if (!fi.available) {
+    return `<section class="act" data-act="features">
+      <h2 class="act-head"><span class="act-no">八</span>因子：模型最看重什么</h2>
+      <p class="muted-note">无法读取模型对象${fi.model_class ? `（${esc(fi.model_class)}）` : ""}：
+        ${esc(fi.reason || "未知原因")}。这不影响其他指标。</p>
+    </section>`;
+  }
+
+  const maxImp = Math.max(...fi.rows.map(r => Math.abs(r.importance))) || 1;
+  const rows = fi.rows.map((r, i) => `<tr>
+    <td class="num">${i + 1}</td>
+    <td><code>${esc(r.feature)}</code></td>
+    <td class="num">${num(r.importance, 1)}</td>
+    <td class="num">${pct(r.share, 2)}</td>
+    <td class="imp-cell"><span class="imp-bar" style="width:${(Math.abs(r.importance) / maxImp * 100).toFixed(1)}%"></span></td>
+  </tr>`).join("");
+
+  return `<section class="act" data-act="features">
+    <h2 class="act-head"><span class="act-no">八</span>因子：模型最看重什么</h2>
+    <p class="act-lede">从训练好的模型对象（<code>params.pkl</code>）里读出的特征重要性。
+      它衡量的是「这个因子在分裂时被用了多少次」，不是因果，也不代表它在未来还有效。</p>
+    ${plate({
+      id: "plate-imp",
+      title: `特征重要性前 ${fi.rows.length}`,
+      note: "份额是归一化后的占比。一个因子单独占比过高，通常意味着模型对单一信号依赖较重。",
+      meta: `${fi.model_class} · 共 ${fi.count} 个因子`,
+      body: `<table class="grid compact">
+        <thead><tr><th class="num">#</th><th>因子</th><th class="num">重要性</th>
+          <th class="num">份额</th><th>分布</th></tr></thead>
+        <tbody>${rows}</tbody></table>`,
+    })}
+  </section>`;
+}
+
 /* --- 7. raw record, grouped and explained --- */
-function actRecord(run) {
+function actRecord(run, x) {
   const m = run.all_metrics || {};
   const p = run.all_params || {};
   const t = run.tags || {};
@@ -2004,15 +2614,25 @@ function actRecord(run) {
       <td class="row-expl">${g ? `<span class="row-hint">${esc(g.what)}</span>` : ""}</td></tr>`;
   }).join("");
 
+  // 产物树：pkl 和文本文件可点击，展开内容预览（类型/shape/列名/前几行）
   const artRows = a.map(v => {
     const depth = v.path.split("/").length - 1;
     const name = v.path.split("/").pop();
-    return `<li style="--d:${depth}" class="${v.is_dir ? "dir" : ""}">
-      <span class="a-name">${esc(name)}</span><span class="a-size">${esc(bytes(v.size))}</span></li>`;
+    const viewable = !v.is_dir && /\.(pkl|pickle|ya?ml|txt|json|md|py|log|csv)$/i.test(name);
+    const open = state.artPath === v.path;
+    return `<li style="--d:${depth}" class="${v.is_dir ? "dir" : ""}${viewable ? " viewable" : ""}${open ? " open" : ""}">
+      <span class="a-name">${viewable
+        ? `<button class="art-btn" data-art="${esc(v.path)}">${esc(name)}</button>`
+        : esc(name)}</span><span class="a-size">${esc(bytes(v.size))}</span></li>`;
   }).join("");
 
+  const cfg = x.config_full;
+  const cfgTree = cfg ? `<div class="sub-head"><h3>解析后的完整配置</h3>
+    <p>YAML 里用了锚点（如 <code>*market</code>），这里给出 qlib 实际解析出来的值。</p></div>
+    <details class="fold"><summary>展开配置树</summary><pre class="json-tree">${esc(JSON.stringify(cfg, null, 2))}</pre></details>` : "";
+
   return `<section class="act" data-act="record">
-    <h2 class="act-head"><span class="act-no">八</span>原始记录</h2>
+    <h2 class="act-head"><span class="act-no">九</span>原始记录</h2>
     <p class="act-lede">平台的价值在于把 mlflow 的原始键翻译成人话。左列是原始键，中间是值，右边是它的含义。</p>
 
     <div class="sub-head"><h3>指标 <span class="n">${Object.keys(m).length}</span></h3></div>
@@ -2026,9 +2646,51 @@ function actRecord(run) {
       `<dt>${esc(k)}</dt><dd>${esc(t[k])}</dd>`).join("")}</dl>
 
     <div class="sub-head"><h3>产物 <span class="n">${a.length}</span></h3>
-      <p>run 目录下的文件。renders/ 是图表，pkl 是逐日数据。</p></div>
+      <p>run 目录下的文件。pkl 和文本文件可以点开看内容——类型、shape、列名、前几行。</p></div>
     <ul class="tree">${artRows}</ul>
+    ${state.artPath ? artPreviewBlock() : ""}
+
+    ${cfgTree}
   </section>`;
+}
+
+function artPreviewBlock() {
+  const a = state.artPreview;
+  if (!a) return `<div class="art-preview"><p class="muted-note">正在读取 ${esc(state.artPath)}…</p></div>`;
+  if (a.error) {
+    return `<div class="art-preview"><div class="sub-head"><h3><code>${esc(a.path)}</code></h3></div>
+      <p class="flag">${esc(a.error)}</p></div>`;
+  }
+
+  let body = "";
+  if (a.kind === "pickle" && a.rows) {
+    const cols = Object.keys(a.rows[0] || {});
+    body = `<p class="muted-note">${esc(a.type)} · shape ${a.shape ? a.shape.join(" × ") : "—"}
+      ${a.index_names && a.index_names.length ? ` · 索引 ${esc(a.index_names.filter(Boolean).join(", "))}` : ""}</p>
+      <p class="muted-note">列：${esc((a.columns || []).join("  "))}</p>
+      <table class="grid compact"><thead><tr>${cols.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead>
+        <tbody>${a.rows.map(r => `<tr>${cols.map(c =>
+          `<td class="${typeof r[c] === "number" ? "num" : ""}">${r[c] == null ? "—" : esc(String(r[c]))}</td>`).join("")}</tr>`).join("")}
+        </tbody></table>`;
+  } else if (a.kind === "pickle") {
+    body = `<p class="muted-note">${esc(a.type)}${a.shape ? ` · shape ${a.shape.join(" × ")}` : ""}
+      ${a.columns ? ` · 列 ${esc(a.columns.join("  "))}` : ""}
+      ${a.item_count ? ` · ${a.item_count} 项` : ""}</p>
+      ${a.sample ? `<pre class="json-tree">${esc(JSON.stringify(a.sample, null, 2))}</pre>` : ""}
+      ${a.items ? `<p class="muted-note">键：${esc(a.items.join("  "))}</p>` : ""}`;
+  } else if (a.kind === "text") {
+    body = `<p class="muted-note">${a.lines} 行${a.truncated ? "（已截断）" : ""}</p>
+      <pre class="json-tree">${esc(a.text)}</pre>`;
+  } else {
+    body = `<p class="muted-note">${esc(a.note || "无预览")}</p>`;
+  }
+
+  return `<div class="art-preview">
+    <div class="sub-head"><h3><code>${esc(a.path)}</code>
+      <span class="n">${bytes(a.size)}</span></h3>
+      <p>${esc(a.kind)}</p></div>
+    ${body}
+  </div>`;
 }
 
 const bytes = n => {
@@ -2194,9 +2856,9 @@ function observePlots() {
 const ACT_LABEL = {
   id: "身份", repeat: "同配置运行", setting: "实验设置", config: "配置原文",
   params: "配置差异", yaml: "配置原文", runs: "该配置的运行",
-  signal: "信号", execution: "执行",
+  signal: "信号", scores: "分数", positions: "持仓", execution: "执行",
   outcome: "结果", training: "训练", figures: "官方图表",
-  record: "原始记录", provenance: "出处",
+  features: "因子", record: "原始记录", provenance: "出处",
 };
 
 function renderOutline() {
@@ -2215,6 +2877,17 @@ function renderOutline() {
     `<li><a href="#act-${a}" data-target="${a}">${esc(ACT_LABEL[a] || a)}</a></li>`
   ).join("");
   scope.querySelectorAll(".act").forEach(a => { if (a.dataset.act) a.id = `act-${a.dataset.act}`; });
+
+  // 章节编号按 DOM 顺序自动写。新增章节时不用再手工重排，也不会出现
+  // 两个「四」——此前插入分数/持仓两节时就是这么撞号的。
+  const CN = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"];
+  let n = 0;
+  scope.querySelectorAll(".act .act-no").forEach(no => {
+    // 对照页的 cmSection 用的是「身份」「设置」这类词，不是数字，跳过
+    if (!/^([一二三四五六七八九十]+|\d+)$/.test(no.textContent.trim())) return;
+    no.textContent = CN[n] || String(n + 1);
+    n += 1;
+  });
   el("outline").querySelectorAll("a").forEach(a => {
     a.addEventListener("click", e => {
       e.preventDefault();

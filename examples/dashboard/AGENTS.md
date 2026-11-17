@@ -45,6 +45,12 @@ cd examples/dashboard && MLFLOW_ALLOW_FILE_STORE=true python -m uvicorn app:app 
 | `GET /api/configs` | **主入口**：按 YAML 分组的 run，每组带 `runs` 列表、`seeds`、`aggregate`（多次运行的极差） |
 | `GET /api/runs` | 全部 run（扁平）+ 每个 run 的 `summary` 与 `config` 身份 |
 | `GET /api/runs/{run_id}` | `run` / `summary` / `verdict` / `sub` / `notes` |
+| `GET /api/runs/{run_id}/predictions?date=&top=` | 某交易日逐股预测分数（`pred.pkl`）：`rows`（排名/代码/分数）、`stats`、`dates`、`exec_date`、`held` |
+| `GET /api/runs/{run_id}/positions?date=` | 某日实际持仓（`positions_normal_1day.pkl`）：`holdings`（股数/成本价/权重/持仓天数）、现金、总资产、`signal_date` |
+| `GET /api/runs/{run_id}/position-signal?date=&topk=` | 持仓日 vs 信号日 topK 的差集：`overlap`、`top_not_held`、`held_not_top` |
+| `GET /api/runs/{run_id}/prediction-vs-label?date=` | 预测分 vs 实际收益（`label.pkl`）：`rows`、五等分 `buckets`、`label_available` |
+| `GET /api/runs/{run_id}/artifact?path=` | 单个产物内容预览：类型/shape/列名/前几行，文本文件直接给原文 |
+| `GET /api/runs/{run_id}/feature-importance?top=` | 从 `params.pkl` 读模型的特征重要性；模型不可反序列化时返回 `available: false` 与原因 |
 | `GET /api/compare?runs=a,b[,c,d]` | 2–4 个 run 的对照：`runs`（槽位 A–D）、`warnings`（可比性）、`sections`（八节逐行）、`param_diff` / `param_same`、`tags`、`artifacts`、`risk`、`charts`、`verdict`、`yaml` |
 | `GET /api/configs/{path}` | 磁盘上一份 YAML 的当前内容 + 它的 run 列表 + 正在跑的任务 |
 | `POST /api/run` | body `{path, repeat}`，入队并返回 `{job_id}` |
@@ -64,7 +70,10 @@ cd examples/dashboard && MLFLOW_ALLOW_FILE_STORE=true python -m uvicorn app:app 
 | `all_metrics` / `all_params` / `tags` | MLflow 记录的每一个条目，不做筛选 |
 | `artifacts` | 产物目录树（路径、是否目录、大小） |
 | `extras.training_curve` | `l2.train` / `l2.valid` 的逐轮历史（`get_metric_history`） |
-| `extras.*_series` | IC / Rank IC / 收益 / 基准 / 换手 / 成本的逐日序列，含 `stats` |
+| `extras.*_series` | IC / Rank IC / 收益 / 基准 / 换手 / 成本 / **总资产 / 持仓市值 / 现金**的逐日序列，含 `stats` |
+| `extras.deal_series` | `indicators_normal_1day.pkl` 的逐日 `deal_amount` / `value` / `count` / `ffr` |
+| `extras.model` | `model.class` + 该模型类型实际生效的超参（按 `MODEL_HYPER_KEYS` 白名单取） |
+| `extras.config_full` | 解析后的完整配置树（含 `task`），带深度与条目上限 |
 | `extras.risk_table` | `port_analysis_1day.pkl` 的风险拆解 |
 | `extras.dataset_inputs` | 反序列化的 DatasetH：handler 类名与三段日期 |
 | `extras.config_summary` | config 产物里的顶层配置（不含 task 树） |
@@ -93,6 +102,21 @@ cd examples/dashboard && MLFLOW_ALLOW_FILE_STORE=true python -m uvicorn app:app 
 **git commit 差异必须显示。** 同一份配置在两个 commit 上跑，不是同一个实验。`compare._tags` 只跳过 `mlflow.user` / `mlflow.runName`，`mlflow.source.git.commit` 保留（显示前 8 位，相同判定用完整值）。
 
 **撮合指标失效有专门识别。** `pa` 和 `pos` 恰好为 0（不是接近 0）是 qlib 退化成复权价模式的签名，`analysis.py` 会直接指出 `factor.day.bin` 缺失，避免误读成「成交完美」。
+
+**信号日与执行日相差一个交易日。** `TopkDropoutStrategy` 在 T 日交易时用 T-1 日信号（`qlib/contrib/strategy/signal_strategy.py:141` 的 `shift=1`）。所以：
+
+- `predictions` 默认取**倒数第二个**交易日——最后一天的分数没有执行日，标不出「持有/未持有」；
+- `positions` 默认取最后一天（账本最完整）；
+- 前端拉持仓时用 `predictions.exec_date` 对齐，不自己推算日期；
+- 每行「持有」标签由后端 `predictions.held` 给出，不用当日持仓自己算——否则标签数与差集 `overlap` 对不上。
+
+实测过：拿错日子会让「持有」数和 overlap 差出 9 个，页面数字自相矛盾。
+
+**持仓数可以不是 topk。** 涨跌停或停牌会导致少数委托当天没成交，实测某日 49 只而非 50。页面上 `overlap + top_not_held` 应等于 topk（信号侧），`overlap + held_not_top` 应等于实际持仓数（持仓侧），两个恒等式都写进说明里，便于自查。
+
+**明细数据懒加载 + 进程内 LRU。** `pred.pkl` / `label.pkl` / `positions` 各 2–3MB，按日期切片后单次只有几百行。`store.py` 用 `_PRED_CACHE` / `_POS_CACHE` / `_LABEL_CACHE` 三个 OrderedDict 做 LRU（上限 4 个 run）。首屏只拉 `/api/runs/{id}`，明细由 `loadDetails()` 并行补拉，失败只少一节、不阻塞整页。
+
+**产物预览必须防路径穿越。** `store.resolve_artifact` 拒绝绝对路径和 `..` 段，并把解析结果限制在该 run 自己的 artifacts 目录内。
 
 **store.py 是唯一的数据边界。** 换 SQLite 或远程 MLflow server 只改这一个文件。所有上层模块只认 dict。
 

@@ -153,6 +153,94 @@ def api_run(run_id: str) -> dict:
     }
 
 
+# ── 明细端点 ──────────────────────────────────────────────────────────────
+# 看板此前只读聚合指标。以下端点把 run 里逐日、逐股的数据直接暴露出来：
+# 预测分数、实际持仓、预测 vs 实际、产物预览、特征重要性。数据都按日期或
+# 字段切片，不会把 pred.pkl 的 26 万行一次性返回。
+
+
+def _run_or_404(run_id: str) -> dict:
+    run = store.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"run {run_id} not found")
+    return run
+
+
+@app.get("/api/runs/{run_id}/predictions")
+def api_predictions(
+    run_id: str,
+    date: str | None = Query(None, description="YYYY-MM-DD，缺省取最后一个交易日"),
+    top: int | None = Query(None, description="只返回分数最高的 N 只，缺省返回全部"),
+) -> dict:
+    run = _run_or_404(run_id)
+    out = store.predictions(run["experiment_id"], run_id, date=date, top=top)
+    if out is None:
+        raise HTTPException(status_code=404, detail="这个 run 没有 pred.pkl")
+    return out
+
+
+@app.get("/api/runs/{run_id}/positions")
+def api_positions(
+    run_id: str,
+    date: str | None = Query(None, description="YYYY-MM-DD，缺省取最后一个交易日"),
+) -> dict:
+    run = _run_or_404(run_id)
+    out = store.positions(run["experiment_id"], run_id, date=date)
+    if out is None:
+        raise HTTPException(status_code=404, detail="这个 run 没有 positions_normal_1day.pkl")
+    return out
+
+
+@app.get("/api/runs/{run_id}/position-signal")
+def api_position_signal(
+    run_id: str,
+    date: str | None = Query(None, description="持仓日 YYYY-MM-DD，缺省取最后一个交易日"),
+    topk: int = Query(50, description="信号 topK，应与配置的 topk 一致"),
+) -> dict:
+    run = _run_or_404(run_id)
+    out = store.position_signal_compare(run["experiment_id"], run_id, date=date, topk=topk)
+    if out is None:
+        raise HTTPException(status_code=404, detail="缺少持仓或预测数据")
+    return out
+
+
+@app.get("/api/runs/{run_id}/prediction-vs-label")
+def api_prediction_vs_label(
+    run_id: str,
+    date: str | None = Query(None, description="YYYY-MM-DD，缺省取最后一个交易日"),
+) -> dict:
+    run = _run_or_404(run_id)
+    out = store.prediction_vs_label(run["experiment_id"], run_id, date=date)
+    if out is None:
+        raise HTTPException(status_code=404, detail="这个 run 没有 pred.pkl")
+    return out
+
+
+@app.get("/api/runs/{run_id}/artifact")
+def api_artifact(
+    run_id: str,
+    path: str = Query(..., description="run 产物目录下的相对路径"),
+) -> dict:
+    run = _run_or_404(run_id)
+    out = store.artifact_preview(run["experiment_id"], run_id, path)
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"产物不存在或路径越界：{path}")
+    return out
+
+
+@app.get("/api/runs/{run_id}/feature-importance")
+def api_feature_importance(
+    run_id: str,
+    top: int = Query(40, description="返回前 N 个因子"),
+) -> dict:
+    run = _run_or_404(run_id)
+    out = store.feature_importance(run["experiment_id"], run_id, top=top)
+    if out is None:
+        raise HTTPException(status_code=404, detail="这个 run 没有 params.pkl")
+    return out
+
+
+
 @app.get("/api/compare")
 def api_compare(runs: str = Query(..., description="逗号分隔的 run id，2–4 个")) -> dict:
     """Two to four runs, aligned row by row and marked where they differ."""

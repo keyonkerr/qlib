@@ -2372,3 +2372,162 @@ pre.yd-doc {
   .run-badge.running .run-badge-dot { animation: none; }
 }
 
+
+/* ═══ 明细视图：分数 / 持仓 / 因子 / 产物预览 ═══════════════════════════
+   新增章节沿用同一套发丝线和等宽数字。这里只补原先不存在的版式：
+   日期条、数据表、差集两栏、重要性条、产物预览。 */
+
+/* 日期选择条：分数与持仓两节共用同一个 state.tradeDate */
+.date-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 9px 0 11px;
+  border-bottom: 1px solid var(--line-2);
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.date-bar label { display: inline-flex; align-items: baseline; gap: 7px; }
+.date-bar select {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--plate);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 3px 7px;
+}
+.date-bar select:focus { outline: 1px solid var(--indigo); outline-offset: 1px; }
+
+.muted-note {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--ink-3);
+  margin: 6px 0;
+}
+
+/* 前 N 只切换 */
+.pick-top { display: flex; gap: 6px; margin: 4px 0 10px; flex-wrap: wrap; }
+.chip {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.chip:hover { border-color: var(--ink-3); color: var(--ink); }
+.chip.on {
+  color: var(--plate);
+  background: var(--indigo);
+  border-color: var(--indigo);
+}
+
+/* 数据表：与 table.record / table.risk 同一重量，只是列多、行密 */
+table.grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  margin: 2px 0 14px;
+}
+table.grid th,
+table.grid td {
+  text-align: left;
+  padding: 4px 9px 4px 0;
+  border-bottom: 1px solid var(--line-2);
+  vertical-align: baseline;
+}
+table.grid thead th {
+  font-family: var(--sans);
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+table.grid tbody tr:last-child td { border-bottom: 0; }
+table.grid td.num,
+table.grid th.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.grid code { font-size: 11.5px; }
+table.grid.compact th,
+table.grid.compact td { padding: 3px 9px 3px 0; }
+
+/* 分数表：未被持有的行压低，让「信号选中但没买」一眼可见 */
+.score-table tbody tr.row-miss td { color: var(--ink-3); }
+.tag {
+  display: inline-block;
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: .03em;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+.tag-held { color: var(--indigo); border-color: rgba(30, 58, 95, .35); }
+.tag-miss { color: var(--ochre); border-color: rgba(156, 91, 36, .35); }
+
+/* 差集两栏：信号选中未持有 / 持有但跌出信号 */
+.two-col {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+
+/* 特征重要性：数值右侧一条份额条 */
+table.grid td.imp-cell { width: 34%; padding-right: 0; }
+.imp-bar {
+  display: block;
+  height: 7px;
+  background: var(--indigo);
+  opacity: .55;
+  min-width: 1px;
+}
+
+/* 产物树里可点击的文件名 */
+.tree li.viewable .a-name { color: var(--indigo); }
+.art-btn {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  border-bottom: 1px dashed rgba(30, 58, 95, .4);
+}
+.art-btn:hover { border-bottom-style: solid; }
+.tree li.open .art-btn { border-bottom-style: solid; font-weight: 500; }
+
+.art-preview {
+  margin: 12px 0 4px;
+  padding: 13px 16px 15px;
+  background: var(--plate);
+  border: 1px solid var(--line);
+}
+.art-preview .sub-head { margin-top: 0; }
+
+/* 配置树 / 文本预览 */
+pre.json-tree {
+  margin: 0;
+  padding: 12px 14px;
+  max-height: 460px;
+  overflow: auto;
+  background: var(--plate);
+  border: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre;
+  color: var(--ink-2);
+  tab-size: 2;
+}
+
+@media (max-width: 900px) {
+  .two-col { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+}
